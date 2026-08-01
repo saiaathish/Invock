@@ -1,0 +1,54 @@
+apiVersion: invock.dev/v1
+kind: InvocationPolicy
+metadata:
+  name: local-developer-default
+  description: Conservative local policy for the Invock reference implementation
+defaults:
+  decision: APPROVAL_REQUIRED
+  unknownCapability: BLOCK
+  unknownEffect: BLOCK
+  unresolvedPath: BLOCK
+  taintToExternalSink: BLOCK
+rules:
+  - id: block-protected-paths
+    decision: BLOCK
+    reasonCodes: [PATH_PROTECTED]
+    when:
+      resources:
+        paths:
+          labels:
+            any: [secret, credential, private_key]
+  - id: block-private-network
+    decision: BLOCK
+    reasonCodes: [SSRF_ADDRESS]
+    when:
+      resources:
+        urls:
+          addressClass: link_local
+  - id: block-shell
+    decision: BLOCK
+    reasonCodes: [OPAQUE_SHELL]
+    when:
+      resources:
+        commands:
+          opaqueShell: true
+  - id: allow-project-reads
+    decision: ALLOW
+    reasonCodes: [PROJECT_READ_ALLOWED]
+    when:
+      all:
+        - capabilities:
+            all: [fs.read]
+            none: [fs.write, fs.delete, process.execute, process.shell]
+        - resources:
+            paths:
+              every: true
+              inside: /workspace
+  - id: approve-external-egress
+    decision: APPROVAL_REQUIRED
+    reasonCodes: [EXTERNAL_EGRESS_REQUIRES_APPROVAL]
+    approval:
+      ttlSeconds: 300
+    when:
+      effects:
+        any: [external.disclosure, external.communication]

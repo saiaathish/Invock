@@ -1,0 +1,31 @@
+{
+  "name": "invock",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Deterministic MCP tool-invocation reference monitor",
+  "type": "module",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "packageManager": "pnpm@11.15.1",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/**/*.test.ts",
+    "test:unit": "node --import tsx --test test/**/*.test.ts",
+    "certify": "pnpm build && node dist/scripts/certify.js",
+    "invock": "node --import tsx src/cli.ts",
+    "demo:safe": "node --import tsx src/cli.ts demo safe",
+    "demo:attack": "node --import tsx src/cli.ts demo attack",
+    "demo": "node --import tsx scripts/demo.ts",
+    "demo:certify": "node --import tsx scripts/demo.ts"
+  },
+  "dependencies": {
+    "yaml": "2.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.18.0",
+    "tsx": "4.20.5",
+    "typescript": "5.9.2"
+  }
+}
