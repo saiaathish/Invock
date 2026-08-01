@@ -18,7 +18,7 @@ Delivered and covered by the mandatory suite:
 - Deterministic `pnpm demo`, `pnpm demo:certify`, and authoritative `pnpm certify`.
 - GitHub-ready license, ignore rules, exact package-manager metadata, Node version, and CI workflow.
 
-Current mandatory suite: **22 tests, 22 passing, 0 failed, 0 skipped** (40 security invariants verified across stdio, HTTP POST, schema drift, lineage taint, atomic approvals, Ed25519 hash-chain receipts, and loopback API).
+Current mandatory suite: **122 tests, 122 passing, 0 failed, 0 skipped**. Expanded INV-41..INV-85 evidence and release certification pass in `EXPANDED_INVARIANTS_MATRIX.md` and `scripts/expanded-certify.ts`.
 
 ## Explicit P3 roadmap only
 

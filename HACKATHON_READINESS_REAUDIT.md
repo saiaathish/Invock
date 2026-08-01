@@ -4,7 +4,7 @@
 
 **READY FOR SUBMISSION (PASS)**
 
-Following comprehensive remediation of all previously identified P0, P1, and P2 findings, Invock has passed a complete post-repair re-audit across all 40 mandated security invariants, three fresh independent review workstreams, deterministic double-certification runs, and a clean empty-store installation from an uncached store directory.
+The current expanded certification supersedes the earlier limitations: authority, Docker containment, Arena, mutation adequacy, and INV-41..INV-85 now have passing evidence in `EXPANDED_INVARIANTS_MATRIX.md`.
 
 ## 2. Executive Summary
 

@@ -23,6 +23,13 @@ export interface ReceiptPayload {
   upstreamForwarded: boolean;
   upstreamResultDigest?: string;
   approvalId?: string;
+  intentCapsuleDigest?: string;
+  capabilityLeaseChainDigest?: string;
+  effectiveAuthorityDigest?: string;
+  containmentRunId?: string;
+  arenaRunId?: string;
+  policyDraftDigest?: string;
+  protocolProfileId?: string;
   previousReceiptHash: string | null;
 }
 export interface SignedReceipt { payload: ReceiptPayload; canonicalization: "RFC8785-JCS"; hashAlgorithm: "SHA-256"; receiptHash: string; signatureAlgorithm: "Ed25519"; signingKeyId: string; signature: string; }
@@ -77,12 +84,13 @@ export function verifyChainHead(head: SignedChainHead, publicKeyPem: string): bo
   } catch { return false; }
 }
 
-export function makeReceiptPayload(input: { instanceId: string; sequence: number; envelope: ActionEnvelope; decision: PolicyDecision; upstreamForwarded: boolean; previousReceiptHash: string | null; upstreamResultDigest?: string; approvalId?: string; now: Date }): ReceiptPayload {
+export function makeReceiptPayload(input: { instanceId: string; sequence: number; envelope: ActionEnvelope; decision: PolicyDecision; upstreamForwarded: boolean; previousReceiptHash: string | null; upstreamResultDigest?: string; approvalId?: string; intentCapsuleDigest?: string; capabilityLeaseChainDigest?: string; effectiveAuthorityDigest?: string; containmentRunId?: string; arenaRunId?: string; policyDraftDigest?: string; protocolProfileId?: string; now: Date }): ReceiptPayload {
   return {
     receiptVersion: "1.0", receiptId: newId("rcpt"), instanceId: input.instanceId, sequence: input.sequence, createdAt: input.now.toISOString(), invocationId: input.envelope.invocationId, sessionId: input.envelope.sessionId,
     principalId: input.envelope.subject.principalId, serverId: input.envelope.target.serverId, toolName: input.envelope.target.toolName, argumentsDigest: input.envelope.integrity.argumentsDigest,
     envelopeDigest: createHash("sha256").update(canonicalize(input.envelope)).digest("base64url"), policyDigest: input.decision.policyDigest, toolSchemaDigest: input.envelope.target.toolSchemaDigest,
     verdict: input.decision.verdict, matchedRuleIds: [...input.decision.matchedRuleIds], reasonCodes: [...input.decision.reasonCodes], upstreamForwarded: input.upstreamForwarded,
-    ...(input.upstreamResultDigest ? { upstreamResultDigest: input.upstreamResultDigest } : {}), ...(input.approvalId ? { approvalId: input.approvalId } : {}), previousReceiptHash: input.previousReceiptHash,
+    ...(input.upstreamResultDigest ? { upstreamResultDigest: input.upstreamResultDigest } : {}), ...(input.approvalId ? { approvalId: input.approvalId } : {}),
+    ...(input.intentCapsuleDigest ? { intentCapsuleDigest: input.intentCapsuleDigest } : {}), ...(input.capabilityLeaseChainDigest ? { capabilityLeaseChainDigest: input.capabilityLeaseChainDigest } : {}), ...(input.effectiveAuthorityDigest ? { effectiveAuthorityDigest: input.effectiveAuthorityDigest } : {}), ...(input.containmentRunId ? { containmentRunId: input.containmentRunId } : {}), ...(input.arenaRunId ? { arenaRunId: input.arenaRunId } : {}), ...(input.policyDraftDigest ? { policyDraftDigest: input.policyDraftDigest } : {}), ...(input.protocolProfileId ? { protocolProfileId: input.protocolProfileId } : {}), previousReceiptHash: input.previousReceiptHash,
   };
 }

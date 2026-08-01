@@ -25,7 +25,7 @@ DATE: 2026-08-01
 ## 2. Test Suite & Harness Execution Summary
 
 - **TypeScript Typecheck (`pnpm typecheck`)**: PASS (0 errors)
-- **Unit, Transport, Security, & API Tests (`pnpm test`)**: PASS (22 passed, 0 failed, 0 skipped)
+- **Unit, Transport, Security, & API Tests (`pnpm test`)**: PASS (116 passed, 0 failed, 0 skipped)
 - **Production Build (`pnpm build`)**: PASS
 - **Deterministic Certification Harness (`pnpm certify`)**: PASS
 - **Automated E2E Demo Harness (`pnpm demo:certify`)**: PASS
@@ -79,4 +79,4 @@ DATE: 2026-08-01
 
 ## 4. Final Certification Sign-Off
 
-The Invock reference monitor is certified as fully operational, deterministic, and fail-closed across its supported hackathon mediation boundary.
+The current code passes the expanded automated suite, real Docker containment probe, Arena execution, authority integration, mutation review, and deterministic double certification.

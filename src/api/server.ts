@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { InvockStore } from "../storage/store.js";
+import { buildReportViewModel, type ActivityRecord } from "../ui/report.js";
 
 const MAX_BODY = 256 * 1024;
 function json(response: ServerResponse, status: number, value: unknown): void { response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" }).end(JSON.stringify(value)); }
@@ -36,9 +37,10 @@ export function startApi(store: InvockStore, options: { host?: string; port?: nu
     const remote = request.socket.remoteAddress ?? "unknown"; const now = Date.now(); const current = attempts.get(remote); const bounded = !current || current.resetAt < now ? { count: 0, resetAt: now + 60_000 } : current; bounded.count++; attempts.set(remote, bounded);
     if (bounded.count > 120) { json(response, 429, { error: "rate_limited" }); return; }
     if (request.method === "GET" && url.pathname === "/api/v1/ready") { const ready = store.isReady(); json(response, ready ? 200 : 503, { ready }); return; }
-    if (request.method === "GET" && url.pathname === "/api/v1/activity") { json(response, 200, { items: store.listActivity(Number(url.searchParams.get("limit") ?? 50)) }); return; }
+    if (request.method === "GET" && url.pathname === "/api/v1/activity") { const records = store.listActivity(Number(url.searchParams.get("limit") ?? 50)) as ActivityRecord[]; json(response, 200, { items: buildReportViewModel(records).items }); return; }
     if (request.method === "GET" && url.pathname === "/api/v1/approvals") { json(response, 200, { items: store.listApprovals() }); return; }
     if (request.method === "GET" && url.pathname === "/api/v1/tools") { json(response, 200, { items: store.listToolRegistry() }); return; }
+    if (request.method === "GET" && url.pathname === "/api/v1/expansions") { json(response, 200, { items: store.listExpansionRecords(url.searchParams.get("type") ?? undefined) }); return; }
     if (request.method === "GET" && url.pathname === "/api/v1/policies") { json(response, 200, { status: "loaded_at_startup" }); return; }
     if (request.method === "GET" && url.pathname === "/api/v1/receipts") { json(response, 200, store.receiptChainStatus()); return; }
     const receipt = /^\/api\/v1\/receipts\/([^/]+)$/u.exec(url.pathname);

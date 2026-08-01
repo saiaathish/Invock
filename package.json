@@ -11,14 +11,21 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test test/**/*.test.ts",
-    "test:unit": "node --import tsx --test test/**/*.test.ts",
+    "test": "node --import tsx --test test/*.test.ts test/**/*.test.ts",
+    "test:unit": "node --import tsx --test test/*.test.ts test/**/*.test.ts",
     "certify": "pnpm build && node dist/scripts/certify.js",
     "invock": "node --import tsx src/cli.ts",
     "demo:safe": "node --import tsx src/cli.ts demo safe",
     "demo:attack": "node --import tsx src/cli.ts demo attack",
     "demo": "node --import tsx scripts/demo.ts",
-    "demo:certify": "node --import tsx scripts/demo.ts"
+    "demo:certify": "node --import tsx scripts/demo.ts",
+    "arena": "node --import tsx scripts/arena/run.ts",
+    "forge": "node --import tsx src/cli.ts forge",
+    "guard": "node --import tsx src/cli.ts guard",
+    "contain": "node --import tsx src/cli.ts contain"
+    ,"mutation-review": "node --import tsx scripts/mutation-review.ts",
+    "docker-containment-test": "node --import tsx scripts/docker-containment-test.ts"
+    ,"expanded-certify": "node --import tsx scripts/expanded-certify.ts"
   },
   "dependencies": {
     "yaml": "2.8.1"

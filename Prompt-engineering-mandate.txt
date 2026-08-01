@@ -1,0 +1,67 @@
+INVOCK SUBAGENT PROMPT-ENGINEERING MANDATE
+============================================
+
+Every subagent prompt issued by the orchestrator MUST contain all of the following
+eleven elements. A prompt missing any element must be rejected and rewritten.
+
+1. GOAL
+   - One precise, measurable goal. No compound or vague objectives.
+   - Example (GOOD): "Implement the Streamable HTTP GET/SSE lifecycle in the owned
+     files, preserving all existing POST behavior."
+   - Example (BAD): "Implement Intent Capsules."
+
+2. OWNED FILES
+   - Exact file paths, relative to the repository root.
+   - Explicit "NEW" or "MODIFY" markers.
+   - Ownership is exclusive: no two subagents share a file.
+
+3. FORBIDDEN FILES
+   - Exact list of paths the subagent must never modify.
+   - Shared contracts and central integration files are always forbidden.
+
+4. REQUIRED INTERFACES
+   - Full TypeScript interface/type signatures the subagent must export.
+   - Exact names, parameter types, and return types.
+   - Structural contracts only where the orchestrator will inject another module.
+
+5. REQUIRED BEHAVIOR
+   - Explicit, literal implementation requirements.
+   - Determinism, fail-closed behavior, bounds, and error handling.
+   - Which existing invariants must be preserved.
+
+6. REQUIRED TESTS
+   - Test file paths.
+   - The exact behavior each test must prove.
+   - Real assertions only; no hardcoded PASS.
+
+7. REQUIRED COMMANDS
+   - Exact command lines the subagent must run to prove completion.
+   - Expected exit codes / output markers.
+
+8. COMPLETION CONDITIONS
+   - Objective gate: what must be true before the subagent may declare PASS.
+   - No PASS without executed evidence.
+
+9. OUTPUT FORMAT
+   - The fixed return-format the subagent MUST produce.
+   - Machine-readable sections; no conversational filler.
+
+10. NO CONVERSATIONAL FILLER
+    - Prompts are literal contracts. No small talk, no vague encouragement.
+
+11. NO AMBIGUOUS DELEGATION / NO UNSUPPORTED ASSUMPTIONS
+    - Every task must be implementable from the repository state the subagent can
+      actually observe.
+    - No assumption about tools, services, or network the subagent cannot verify.
+
+SUBAGENT RULES
+--------------
+- A subagent may modify ONLY its owned files.
+- A subagent may not modify shared contracts.
+- A subagent may not modify package.json, pnpm-lock.yaml, or tsconfig files.
+- A subagent must not leave child processes, containers, temp databases, temp keys,
+  or temp directories behind.
+- A subagent must not contact the public internet unless explicitly instructed and
+  then only against officially documented sources.
+- A subagent must not log real secrets, keys, tokens, or full sensitive payloads.
+- A subagent must report PASS only from executed evidence.
