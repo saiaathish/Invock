@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.7 — 2026-08-02
+
+- Fixed the release-provenance workflow's signed SBOM verification import path and prepared the exact merged release candidate for external provenance verification.
+
 ## 0.1.6 — 2026-08-02
 
 - Hardened authority, identity/session binding, containment proof cleanup, protocol negotiation, upstream HTTPS/DNS pinning, and release-evidence verification.
