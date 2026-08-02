@@ -47,7 +47,10 @@ for (const document of documents) {
   lines.forEach((line, index) => {
     const location = `${document}:${index + 1}`;
     const historicalLine = documentHistorical || historical.test(line);
-    const testCountMatches = [...line.matchAll(/\b(\d+)\s*(?:tests?|passing|passed)\b/giu)];
+    // Checklist labels such as "Stage 1 tests pass" are stage identifiers,
+    // not claims about the repository test total.
+    const stageChecklistLine = /\bStage\s+\d+\b.*\btests?\b/iu.test(line);
+    const testCountMatches = stageChecklistLine ? [] : [...line.matchAll(/\b(\d+)\s*(?:tests?|passing|passed)\b/giu)];
     if (testCountMatches.some(match => Number(match[1]) !== testCount) && !historicalLine) findings.push(`${location}:stale-test-count`);
     const countMatches = [...line.matchAll(/\b(\d+)\s*\/\s*(\d+)\b/gu)];
     for (const match of countMatches) {

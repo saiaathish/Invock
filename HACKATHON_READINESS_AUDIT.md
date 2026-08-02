@@ -24,7 +24,7 @@ No real credentials or external services were used. This report is the sole audi
 
 | Item | Evidence | Result |
 |---|---|---|
-| Working directory | `/Users/saiaathishkarthik/Desktop/Invock` | Observed |
+| Working directory | `.` | Observed |
 | Git root / branch / commit | The audit environment reported `fatal: not a git repository` for `git rev-parse`, `git branch`, `git log`, and `git status` | **Unavailable in that historical audit environment** |
 | Initial working tree | Cannot be established without `.git`; pre-audit file inventory was recorded by the environment | Not independently provable |
 | Node | `v22.23.1` | Meets `>=22.5.0` |

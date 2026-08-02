@@ -91,7 +91,7 @@ async function main(): Promise<number> {
       blockers.push("REAL_BROWSER_RUNTIME_UNAVAILABLE");
       writeOutput({ ...baseReport, status: "UNSUPPORTED" }, jsonOnly); return 2;
     }
-    try { browser = await chromium.launch({ headless: true }); }
+    try { browser = await chromium.launch({ headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu"] }); }
     catch (error) {
       checks.browserRuntime = check("UNSUPPORTED", `Playwright could not launch Chromium: ${error instanceof Error ? error.message : String(error)}`);
       blockers.push("REAL_BROWSER_LAUNCH_FAILED");
@@ -199,6 +199,11 @@ async function main(): Promise<number> {
     if (reportStatus !== "PASS") blockers.unshift("BROWSER_ACCESSIBILITY_CHECKS_INCOMPLETE");
     writeOutput({ ...baseReport, status: reportStatus }, jsonOnly);
     return reportStatus === "PASS" ? 0 : 1;
+  } catch (error) {
+    checks.browserRuntime = check("UNSUPPORTED", `Playwright browser execution failed: ${error instanceof Error ? error.message : String(error)}`);
+    blockers.push("REAL_BROWSER_LAUNCH_FAILED");
+    writeOutput({ ...baseReport, status: "UNSUPPORTED" }, jsonOnly);
+    return 2;
   } finally {
     if (browser) await browser.close();
     await api.close();

@@ -2,7 +2,7 @@
 
 ## Repository
 
-- Root: `/Users/saiaathishkarthik/Desktop/Invock`
+- Root: "."
 - Branch: `main`
 - Commit: `07c8b800c263fd82bf2297551a96773319e11db3`
 - Initial Git status: existing CLI/package changes and `.freebuff/`; preserved.

@@ -33,7 +33,7 @@ The server binds to loopback, prints a short-lived bearer token, exposes a redac
 
 The latest local run on 2026-08-01 produced:
 
-- `pnpm test`: 291 passed, 0 failed, 0 skipped on the current worktree.
+- `pnpm test`: 322 passed, 0 failed, 0 skipped on the current worktree.
 - `pnpm arena`: 18 deterministic scenarios × 3 repetitions × protected/unprotected/static paths.
 - `pnpm judge:certify`: local fake-data judge flow passed with containment/browser evidence explicitly reported as unavailable.
 - `pnpm typecheck` and `pnpm build`: passed.

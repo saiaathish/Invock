@@ -228,7 +228,7 @@ The bounded depth of 17 deliberately exercises the depth-16 boundary. A run is e
 ## Limitations
 
 * This document defines the target calculus and test plan; it does not alter the source or add property tests because the task forbids source/test changes.
-* Current tests executed for this revision: `pnpm test` passed 291/291; `pnpm typecheck` and `pnpm build` passed; the bounded property, fuzz, chaos, security, authority, transport, and API suites passed. These results are local evidence, not proof of every production or external-deployment vector in the calculus above.
+* Current tests executed for this revision: `pnpm test` passed 322/322; `pnpm typecheck` and `pnpm build` passed; the bounded property, fuzz, chaos, security, authority, transport, and API suites passed. These results are local evidence, not proof of every production or external-deployment vector in the calculus above.
 * The hostile normalizer and explicit-unknown probes were local, in-memory, read-only reproductions. They did not contact a public service or use real secrets.
 * No DNS-rebinding, public-network, Docker, dependency-audit, clean-install, or cross-process crash test was run. Those claims are NOT PROVEN in this audit.
 * The current source has no `test/stdio.test.ts`; existing certification references to that path are false evidence pointers even though stdio behavior is exercised from `test/readiness.test.ts`.
