@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -61,6 +61,10 @@ async function runProductProbe(image: string, digest: string): Promise<Containme
   const hostProbeDirectory = mkdtempSync(join(tmpdir(), "invock-docker-host-probe-"));
   const hostProbe = join(hostProbeDirectory, "host-only.txt");
   try {
+    // mkdtempSync creates a 0700 directory. The product probe intentionally
+    // runs as UID 65532 inside Docker, so make the read-only fixture mount
+    // traversable without granting it write access.
+    chmodSync(fixtureRoot, 0o755);
     copyFileSync(fileURLToPath(new URL("../fixtures/containment/adversarial.js", import.meta.url)), join(fixtureRoot, "adversarial.js"));
     writeFileSync(hostProbe, "host-only-containment-probe\n", { mode: 0o600 });
     return await runContained({
