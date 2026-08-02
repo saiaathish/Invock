@@ -19,6 +19,8 @@ export interface HttpMcpGateway { server: Server; url: string; token: string; cl
 /** Streamable HTTP entry point: validates HTTP/JSON-RPC then applies the same invocation gate used by stdio. */
 export async function startStreamableHttpGateway(gate: InvocationGate, options: HttpMcpGatewayOptions): Promise<HttpMcpGateway> {
   const host = options.host ?? "127.0.0.1"; const token = options.token ?? randomBytes(32).toString("base64url"); const allowedOrigins = new Set(options.allowedOrigins ?? []);
+  const negotiatedProtocolBySession = new Map<string, string>();
+  const maxTrackedProtocolSessions = 1024;
   type RequestId = string | number;
   type RequestScope = { kind: "session"; id: string } | { kind: "connection"; socket: object };
   const inFlightBySession = new Map<string, Set<RequestId>>();
@@ -79,8 +81,30 @@ export async function startStreamableHttpGateway(gate: InvocationGate, options: 
     if (!request.headers["content-type"]?.toLowerCase().startsWith("application/json")) { send(response, 415); return; }
     let message: JsonRpcMessage;
     let protocolEra: ReturnType<typeof negotiateEra>;
-    try { protocolEra = negotiateEra(request.headers["mcp-protocol-version"] as string | undefined, options.candidate2026); message = parseJsonRpc(await readJson(request)); }
-    catch (error) { send(response, 400, protocolError(null, -32700, error instanceof Error ? error.message : "Parse error")); return; }
+    let requestedProtocolVersion: string;
+    try {
+      const headerValue = request.headers["mcp-protocol-version"];
+      if (Array.isArray(headerValue)) throw new Error("MCP_PROTOCOL_VERSION_HEADER_INVALID");
+      const headerVersion = headerValue;
+      message = parseJsonRpc(await readJson(request));
+      const sessionHeader = request.headers["mcp-session-id"];
+      const sessionId = typeof sessionHeader === "string" ? sessionHeader : undefined;
+      const rememberedVersion = sessionId === undefined ? undefined : negotiatedProtocolBySession.get(sessionId);
+      const isInitialize = "method" in message && message.method === "initialize";
+      if (isInitialize) {
+        const params = "params" in message && message.params !== null && typeof message.params === "object" ? message.params : undefined;
+        const bodyVersion = params && typeof params.protocolVersion === "string" ? params.protocolVersion : undefined;
+        if (bodyVersion === undefined) throw new Error("MCP_INITIALIZE_PROTOCOL_VERSION_REQUIRED");
+        if (headerVersion !== undefined && headerVersion !== bodyVersion) throw new Error("MCP_PROTOCOL_VERSION_HEADER_MISMATCH");
+        if (rememberedVersion !== undefined && rememberedVersion !== bodyVersion) throw new Error("MCP_PROTOCOL_VERSION_SESSION_MISMATCH");
+        requestedProtocolVersion = bodyVersion;
+      } else {
+        requestedProtocolVersion = headerVersion ?? rememberedVersion ?? "2025-11-25";
+        if (rememberedVersion !== undefined && headerVersion !== undefined && headerVersion !== rememberedVersion) throw new Error("MCP_PROTOCOL_VERSION_SESSION_MISMATCH");
+      }
+      protocolEra = negotiateEra(requestedProtocolVersion, options.candidate2026);
+    }
+    catch (error) { send(response, 400, protocolError(null, -32602, error instanceof Error ? error.message : "Invalid MCP protocol negotiation")); return; }
     const sessionHeader = request.headers["mcp-session-id"];
     if (sessionHeader !== undefined && (typeof sessionHeader !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/u.test(sessionHeader))) { send(response, 400, protocolError(null, -32600, "Invalid MCP session id")); return; }
     const hasSseSession = typeof sessionHeader === "string" && sseManager !== undefined && sseManager.getSession(sessionHeader) !== undefined;
@@ -104,6 +128,19 @@ export async function startStreamableHttpGateway(gate: InvocationGate, options: 
         const upstream = await forward(message, controller.signal);
         if (!isJsonRpcResponse(upstream)) throw new Error("UPSTREAM_MALFORMED_RESPONSE");
         if (controlId !== undefined && (!("id" in upstream) || upstream.id !== controlId)) throw new Error("UPSTREAM_RESPONSE_ID_MISMATCH");
+        if ("method" in message && message.method === "initialize") {
+          const result = "result" in upstream && upstream.result !== null && typeof upstream.result === "object" && !Array.isArray(upstream.result)
+            ? upstream.result as Record<string, unknown>
+            : undefined;
+          const selectedVersion = result?.protocolVersion;
+          if (typeof selectedVersion !== "string" || selectedVersion !== protocolEra.negotiatedVersion) throw new Error("UPSTREAM_PROTOCOL_NEGOTIATION_FAILED");
+          negotiateEra(selectedVersion, options.candidate2026);
+          const sessionId = request.headers["mcp-session-id"];
+          if (typeof sessionId === "string") {
+            if (!negotiatedProtocolBySession.has(sessionId) && negotiatedProtocolBySession.size >= maxTrackedProtocolSessions) throw new Error("MCP_PROTOCOL_SESSION_LIMIT_REACHED");
+            negotiatedProtocolBySession.set(sessionId, selectedVersion);
+          }
+        }
         if ("method" in message && message.method === "tools/list" && "result" in upstream) gate.observeToolsList(upstream.result);
         await deliver(upstream); return;
       } catch { send(response, 502, protocolError(controlId ?? null, -32050, "Upstream gateway failure")); return; }

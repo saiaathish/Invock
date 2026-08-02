@@ -2,7 +2,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, w
 import { dirname, resolve } from "node:path";
 import { createPrivateKey, createPublicKey, generateKeyPairSync, sign, verify, type KeyObject } from "node:crypto";
 import { digestJson, newId } from "../core/canonical.js";
-import type { AgentIdentity, AgentSession, EnrollmentInput, EnrollmentResult, EnrollmentToken, IdentityEvidenceBinding, SoftwareWorkloadAttestation } from "./types.js";
+import type { AgentIdentity, AgentSession, EnrollmentInput, EnrollmentResult, EnrollmentToken, IdentityEvidenceBinding, IdentityRuntimeContext, SoftwareWorkloadAttestation } from "./types.js";
 
 const ENROLLMENT_TTL_SECONDS = 900;
 const MAX_SESSION_TTL_SECONDS = 86_400;
@@ -264,6 +264,17 @@ export class IdentityAuthority {
     if (session.status !== "ACTIVE" || record.identity.trustState === "SUSPENDED" || record.identity.trustState === "REVOKED") throw new Error("Session is not active");
     if (Date.parse(session.expiresAt) <= now.getTime()) { stored.session = { ...stored.session, status: "EXPIRED" }; this.persist(); throw new Error("Session is expired"); }
     return true;
+  }
+
+  /** Returns an authority-owned, verified execution context for a live session. */
+  executionContext(agentId: string, sessionId: string, now = new Date()): IdentityRuntimeContext {
+    const record = this.record(agentId);
+    const entry = this.sessions.get(nonEmpty(sessionId, "sessionId"));
+    if (!entry || entry.session.agentId !== agentId) throw new Error("IDENTITY_SESSION_NOT_FOUND");
+    const session = copySession(entry.session);
+    this.verifySession(session, now);
+    this.verifyExecutionTrust(record.identity.id, now);
+    return { identity: copyIdentity(record.identity), session };
   }
 
   identityDigest(identity: AgentIdentity): string {

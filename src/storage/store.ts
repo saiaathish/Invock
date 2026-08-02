@@ -291,7 +291,7 @@ export class InvockStore {
     const stored = this.getExpansionRecord(metadata.containmentRunId);
     if (!stored || stored.recordType !== "containment_run" || stored.payload === null || typeof stored.payload !== "object" || !verifyContainmentRun(stored.payload as ContainmentRunRecord, this.trustedContainmentKeys)) throw new Error("CONTAINMENT_RUN_EVIDENCE_INVALID");
     const record = stored.payload as ContainmentRunRecord;
-    if (record.runId !== metadata.containmentRunId || record.invocationId !== envelope.invocationId || record.sessionId !== envelope.sessionId || record.authorizedRequestDigest !== envelope.integrity.requestDigest || record.requestDigest !== metadata.containmentRequestDigest || record.profileDigest !== metadata.containmentProfileDigest || record.result.status !== "completed") throw new Error("CONTAINMENT_RUN_BINDING_MISMATCH");
+    if (record.runId !== metadata.containmentRunId || record.invocationId !== envelope.invocationId || record.sessionId !== envelope.sessionId || record.authorizedRequestDigest !== envelope.integrity.requestDigest || record.requestDigest !== metadata.containmentRequestDigest || record.profileDigest !== metadata.containmentProfileDigest || record.result.status !== "completed" || record.result.cleanup !== "completed") throw new Error("CONTAINMENT_RUN_BINDING_MISMATCH");
     if (process.env.INVOCK_TEST_MODE !== "1") {
       const approved = this.approvedContainmentProfiles?.find(profile => profile.profileDigest === record.profileDigest);
       if (!approved) throw new Error("CONTAINMENT_PROFILE_UNAPPROVED");
@@ -381,6 +381,7 @@ export class InvockStore {
       if (seenLeaseIds.has(lease.leaseId)) throw new Error("AUTHORITY_LEASE_DUPLICATE");
       seenLeaseIds.add(lease.leaseId);
       if (index === 0 && lease.parentLeaseId !== undefined) throw new Error("AUTHORITY_LEASE_CHAIN_INCOMPLETE");
+      if (index === 0 && lease.issuer !== capsule.rootIssuer) throw new Error("ROOT_LEASE_ISSUER_MISMATCH");
       if (index > 0) {
         const parent = leases[index - 1];
         if (!parent) throw new Error("AUTHORITY_LEASE_CHAIN_INVALID");

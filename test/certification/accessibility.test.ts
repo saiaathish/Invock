@@ -7,10 +7,10 @@ import { test } from "node:test";
 const root = resolve(import.meta.dirname, "../..");
 
 test("accessibility certification exercises the served dashboard with a real browser", () => {
-  const result = spawnSync(process.execPath, ["--import", "tsx", "scripts/accessibility-certify.ts", "--json"], { cwd: root, env: { ...process.env, NODE_NO_WARNINGS: "1" }, encoding: "utf8", timeout: 60_000 });
+  const result = spawnSync(process.execPath, ["--import", "tsx", "scripts/accessibility-certify.ts", "--json"], { cwd: root, env: { ...process.env, NODE_NO_WARNINGS: "1", NODE_OPTIONS: "" }, encoding: "utf8", timeout: 60_000 });
   assert.notEqual(result.status, null);
   assert.notEqual(result.status, 2, `browser path unsupported in the certification environment: ${result.stdout}\n${result.stderr}`);
-  assert.equal(result.stderr, "", result.stderr);
+  assert.equal(result.stderr.trim(), "", result.stderr);
   const report = JSON.parse(result.stdout) as { status: string; environment: { browserPath: string; browserPlugin: string }; checks: Record<string, { status: string; evidence: string }>; interaction: { executed: boolean; apiResponses: Record<string, number> }; screenshots: string[]; artifactPath: string; blockers: string[] };
   assert.equal(report.environment.browserPath, "regular-playwright");
   assert.equal(report.environment.browserPlugin, "unavailable");

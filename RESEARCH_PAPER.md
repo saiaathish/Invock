@@ -46,7 +46,7 @@ The current baseline callback is intentionally local and simple. No production b
 
 ## 11. Security results
 
-The latest repository suite reports 283 passing tests. Focused tests cover normalization, approvals, lineage encodings and detached lineage evidence, authority lifecycle and binding, identity evidence, API authentication, property/fuzz/chaos behavior, signed supply-chain evidence, and containment fail-closed behavior including gate-bound run linkage.
+The latest repository suite reports 291 passing tests. Focused tests cover normalization, approvals, lineage encodings and detached lineage evidence, authority lifecycle and binding, identity evidence, API authentication, property/fuzz/chaos behavior, signed supply-chain evidence, and containment fail-closed behavior including gate-bound run linkage.
 
 ## 12. Benign utility
 

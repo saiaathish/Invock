@@ -23,6 +23,8 @@ export interface AuthorityBudgets {
 export interface IntentCapsule {
   capsuleId: string;
   version: number;
+  /** Canonical issuer label permitted for a root capability lease. */
+  rootIssuer: string;
   purpose: string;
   allowedTools: string[];
   allowedCapabilities: Capability[];

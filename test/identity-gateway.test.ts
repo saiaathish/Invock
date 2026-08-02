@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { IdentityAuthority } from "../src/identity/index.js";
+import { activateIntentCapsule, createIntentCapsule, issueCapabilityLease } from "../src/authority/index.js";
 import { compilePolicy, parsePolicyYaml } from "../src/core/policy.js";
 import { InvocationGate, StaticDescriptorRegistry } from "../src/gateway/engine.js";
 import { InvockStore } from "../src/storage/store.js";
@@ -98,4 +99,68 @@ test("self-consistent identity evidence without authoritative runtime context is
     assert.equal(outcome.kind, "respond");
     if (outcome.kind === "respond") assert.match(String(outcome.response.result.structuredContent?.reasonCodes), /IDENTITY_BINDING_INVALID/u);
   } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("production gates require identity evidence even with an authority chain", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "invock-gateway-default-"));
+  const store = new InvockStore(join(directory, "store.sqlite"));
+  try {
+    const now = new Date("2026-01-01T00:00:00.000Z");
+    const target = join(directory, "safe.txt");
+    const capsule = activateIntentCapsule(createIntentCapsule({
+      version: 1,
+      purpose: "read safe file",
+      allowedTools: ["read"],
+      allowedCapabilities: ["fs.read"],
+      allowedEffects: ["data.observe"],
+      resourceConstraints: { paths: [target], domains: [], recipients: [] },
+      dataConstraints: { allowedLabels: ["public", "internal"], forbiddenLabels: ["secret"] },
+      budgets: { calls: 1 },
+      expiresAt: "2028-01-01T00:00:00.000Z",
+    }, now), now);
+    const lease = issueCapabilityLease({
+      issuer: "capsule",
+      subject: "worker",
+      capabilities: ["fs.read"],
+      constraints: { tools: ["read"], effects: ["data.observe"], resources: { paths: [target], domains: [], recipients: [] }, data: { allowedLabels: ["public", "internal"], forbiddenLabels: ["secret"] } },
+      remainingCalls: 1,
+      issuedAt: now.toISOString(),
+      expiresAt: "2027-12-01T00:00:00.000Z",
+    }, capsule, undefined, now);
+    const authorityPolicy = compilePolicy(parsePolicyYaml(`apiVersion: invock.dev/v1
+kind: InvocationPolicy
+metadata: { name: authority-default-identity }
+defaults: { decision: ALLOW, unknownCapability: BLOCK, unknownEffect: BLOCK }
+rules:
+  - id: allow-read
+    decision: ALLOW
+    reasonCodes: []
+    when: { uncertainty: { empty: true } }
+`));
+    const descriptors = new StaticDescriptorRegistry({ read: { fields: [{ pointer: "/path", type: "path", access: "read" }], inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"], additionalProperties: false } } });
+    const gate = new InvocationGate(authorityPolicy, descriptors, store, {
+      cwd: directory,
+      projectRoot: directory,
+      organizationDomains: [],
+      sessionId: "authority-session",
+      principal: { principalId: "test", agentId: "worker", clientId: "test", scopes: [] },
+      now: () => now,
+    }, { requireContainment: false });
+    assert.equal(gate.requiresContainment(), true);
+    const outcome = await gate.authorizeInvocation({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "read", arguments: { path: "safe.txt" } } }, {
+      protocolEra: "2025-11-25",
+      authority: {
+        sessionId: "authority-session",
+        capsule,
+        leases: [lease],
+        request: { tool: "wrong-tool", capabilities: [], effects: [] },
+        consume: () => undefined,
+      },
+    });
+    assert.equal(outcome.kind, "respond");
+    if (outcome.kind === "respond") assert.ok((outcome.response.result.structuredContent?.reasonCodes as string[]).includes("IDENTITY_BINDING_INVALID"));
+  } finally {
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

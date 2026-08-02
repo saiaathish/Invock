@@ -212,7 +212,7 @@ rules:
   // Arena uses a deterministic in-process fake executor; it must not be
   // presented as containment evidence. Production adapters keep the strict
   // gate default and require a signed contained-forward contract.
-  return new InvocationGate(policy, descriptors, store, { cwd: directory, projectRoot: directory, organizationDomains: ["example.com"], sessionId: "arena-session", serverId: "arena-local", protocolEra: "2025-11-25", principal: { principalId: "arena-agent", clientId: "arena-runner", agentId: "arena-agent", scopes: ["*"] } }, { requireContainment: false });
+  return new InvocationGate(policy, descriptors, store, { cwd: directory, projectRoot: directory, organizationDomains: ["example.com"], sessionId: "arena-session", serverId: "arena-local", protocolEra: "2025-11-25", principal: { principalId: "arena-agent", clientId: "arena-runner", agentId: "arena-agent", scopes: ["*"] } }, { allowUnboundForTests: true, requireContainment: false });
 }
 
 const store = new InvockStore(join(directory, "arena.sqlite"));

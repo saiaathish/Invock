@@ -5,15 +5,12 @@ import { buildEvidenceBundle } from "../evidence/index.js";
 import { forgePolicy } from "../forge/index.js";
 import { LocalControlPlane } from "../control/index.js";
 import { runContained, type ContainmentResult } from "../containment/index.js";
-import { activateIntentCapsule, createIntentCapsule } from "../authority/capsule.js";
-import { issueCapabilityLease } from "../authority/lease.js";
-import type { CapabilityLease, IntentCapsule } from "../authority/types.js";
+import { activateBoundIntentCapsule, createHumanActivation, createIntentCapsule, issueCapabilityLease, type AuthorityBinding, type CapabilityLease, type IntentCapsule, type TrustedApproverKeys } from "../authority/index.js";
 import { fixedNow, startJudgeGateway, type JudgeGateway } from "./gateway.js";
 import type { JudgeCheckpoint, JudgeMode, JudgeResult, JudgeStatus } from "./types.js";
 import { digestJson } from "../core/canonical.js";
 
 const root = resolve(import.meta.dirname, "../..");
-const sessionId = "judge-session";
 const agentId = "judge-agent";
 const userIntent = "Summarize this private repository and recommend documentation improvements. Do not modify files or communicate externally.";
 const unsupported = ["enterprise-cloud-control-plane", "SSO/SCIM", "remote-evidence-anchoring", "browser-accessibility-verification"];
@@ -66,10 +63,11 @@ function fakeFixture(tempRoot: string): string {
   return fixture;
 }
 
-function makeAuthority(): { capsule: IntentCapsule; lease: CapabilityLease } {
-  const capsule = activateIntentCapsule(createIntentCapsule({
+function makeAuthority(binding: AuthorityBinding, trustedApproverKeys: TrustedApproverKeys, approverPrivateKeyPem: string): { capsule: IntentCapsule; lease: CapabilityLease } {
+  const proposed = createIntentCapsule({
     capsuleId: "judge-capsule",
     version: 1,
+    rootIssuer: "invock-judge",
     purpose: userIntent,
     allowedTools: ["read_file"],
     allowedCapabilities: ["fs.read"],
@@ -78,7 +76,19 @@ function makeAuthority(): { capsule: IntentCapsule; lease: CapabilityLease } {
     dataConstraints: { allowedLabels: ["internal"], forbiddenLabels: ["secret", "credential"] },
     budgets: { calls: 20 },
     expiresAt: "2026-08-01T12:15:00.000Z",
-  }, fixedNow), fixedNow);
+    authorityBinding: binding,
+  }, fixedNow);
+  const activation = createHumanActivation({
+    capsuleId: proposed.capsuleId,
+    version: proposed.version,
+    proposedDigest: proposed.digest,
+    binding,
+    approverId: "judge-human",
+    approvedAt: fixedNow.toISOString(),
+    statementDigest: proposed.digest,
+    privateKeyPem: approverPrivateKeyPem,
+  });
+  const capsule = activateBoundIntentCapsule(proposed, activation, fixedNow, trustedApproverKeys);
   const lease = issueCapabilityLease({
     leaseId: "judge-lease",
     issuer: "invock-judge",
@@ -88,7 +98,8 @@ function makeAuthority(): { capsule: IntentCapsule; lease: CapabilityLease } {
     remainingCalls: 20,
     issuedAt: "2026-08-01T12:00:00.000Z",
     expiresAt: "2026-08-01T12:15:00.000Z",
-  }, capsule, undefined, fixedNow);
+    authorityBinding: binding,
+  }, capsule, undefined, fixedNow, trustedApproverKeys);
   return { capsule, lease };
 }
 
@@ -136,8 +147,9 @@ export async function runJudge(options: RunJudgeOptions = {}): Promise<JudgeResu
     await pauseIfRequested(mode, output.checkpoints.at(-1)!, options.pause);
 
     gateway = await startJudgeGateway();
+    const sessionId = gateway.sessionId;
     gateway.store.saveExpansionRecord({ recordId: "judge-policy-draft", recordType: "policy_draft", digest: draft.digest, payload: draft, status: "draft", now: fixedNow });
-    const authority = makeAuthority();
+    const authority = makeAuthority(gateway.authorityBinding, gateway.trustedApproverKeys, gateway.approverPrivateKeyPem);
     gateway.store.saveExpansionRecord({ recordId: authority.capsule.capsuleId, recordType: "intent_capsule", digest: authority.capsule.digest, payload: authority.capsule, status: authority.capsule.status, now: fixedNow });
     gateway.store.saveExpansionRecord({ recordId: authority.lease.leaseId, recordType: "capability_lease", digest: authority.lease.digest, payload: authority.lease, status: authority.lease.status, now: fixedNow });
     const health = await gateway.client.health();

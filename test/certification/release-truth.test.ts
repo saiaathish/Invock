@@ -61,7 +61,9 @@ test("the authoritative gate invokes a supported protocol command and derives se
   assert.match(release, /name: release-provenance/u);
   assert.match(release, /actions\/download-artifact@[0-9a-f]{40}/u);
   assert.match(release, /actions\/attest-sbom@[0-9a-f]{40}/u);
-  assert.match(release, /node --import tsx scripts\/supply-chain\.ts --sign > release-evidence\/supply-chain\.json/u);
+  assert.match(release, /advisory_status=.*queried-no-findings/su);
+  assert.match(release, /--advisory-status "\$advisory_status" --advisory-evidence "\$advisory_digest" --cyclonedx-out release-evidence\/sbom\.cdx\.json/u);
+  assert.match(release, /metadata\?\.vulnerabilities/u);
   assert.match(release, /report\.sbom\?\.bomFormat/u);
   assert.match(release, /INVOCK_CONTAINMENT_IMAGE="invock-containment-candidate:\$\{GITHUB_SHA\}"/u);
   const publish = release.slice(release.indexOf("  publish:"));

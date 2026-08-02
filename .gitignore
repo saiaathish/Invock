@@ -9,3 +9,7 @@ dist/
 chain-head.json
 .certification/
 coverage/
+.gstack/
+.artifacts/independent-audits/*.md
+__pycache__/
+*.py[cod]

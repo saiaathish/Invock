@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import type { InvocationGate, ForwardedCall } from "./engine.js";
 import type { ToolCallRequest, ToolResult } from "../core/types.js";
-import { isJsonRpcResponse, parseJsonRpc, parseToolResult, type JsonRpcMessage } from "../mcp/protocol.js";
+import { isJsonRpcResponse, negotiateEra, parseJsonRpc, parseToolResult, type JsonRpcMessage } from "../mcp/protocol.js";
 import type { ContainmentRunRecord } from "../containment/lifecycle.js";
 
 const MAX_FRAME_BYTES = 2 * 1024 * 1024;
@@ -25,7 +25,7 @@ function stringify(message: unknown): string { return `${JSON.stringify(message)
 
 export interface StdioContainedForwardResult { response: JsonRpcMessage; containment: ContainmentRunRecord; }
 export type StdioContainedForward = (forwarded: ForwardedCall, signal: AbortSignal) => Promise<StdioContainedForwardResult>;
-export interface StdioProxyConfig { command: string; args: string[]; cwd: string; envAllowlist?: string[]; serverId?: string; requestTimeoutMs?: number; /** Required for strict forwards. The returned signed run is verified and bound before completion. */ containedForward?: StdioContainedForward; }
+export interface StdioProxyConfig { command: string; args: string[]; cwd: string; envAllowlist?: string[]; serverId?: string; requestTimeoutMs?: number; candidate2026?: boolean; /** Required for strict forwards. The returned signed run is verified and bound before completion. */ containedForward?: StdioContainedForward; }
 export interface StdioIo { stdin: NodeJS.ReadableStream; stdout: NodeJS.WritableStream; stderr: NodeJS.WritableStream; }
 
 /**
@@ -49,6 +49,14 @@ export async function runStdioProxy(config: StdioProxyConfig, gate: InvocationGa
   let inputEnded = false;
   let childClosed = child === undefined;
   let pendingLines = 0;
+  let requestedProtocolVersion: string | undefined;
+  // A strict proxy has no upstream peer to negotiate with. Its server-owned
+  // contained execution path uses the stable default profile; ordinary proxy
+  // mode remains blocked until the child explicitly completes initialize.
+  let negotiatedProtocolVersion: string | undefined = strictContainment ? "2025-11-25" : undefined;
+  let initializationBarrier: Promise<void> | undefined;
+  let resolveInitialization: (() => void) | undefined;
+  let rejectInitialization: ((error: Error) => void) | undefined;
   let resolveDone!: () => void;
   const done = new Promise<void>(resolve => { resolveDone = resolve; });
   const maybeDone = (): void => { if (inputEnded && childClosed && pendingLines === 0) resolveDone(); };
@@ -112,6 +120,16 @@ export async function runStdioProxy(config: StdioProxyConfig, gate: InvocationGa
       if (message.method && ["initialize", "initialized", "notifications/initialized", "tools/list", "ping", "logging/setLevel", "resources/list", "prompts/list"].includes(message.method)) {
         if (message.id !== undefined && (reservedIds.has(message.id) || inFlight.has(message.id) || controlInFlight.has(message.id))) { protocolError(message.id, -32600, "DUPLICATE_IN_FLIGHT_REQUEST_ID"); return; }
         if (strictContainment) { protocolError(typeof message.id === "string" || typeof message.id === "number" ? message.id : null, -32051, "CONTAINMENT_REQUIRED_FOR_CONTROL_PLANE"); return; }
+        if (message.method === "initialize") {
+          const params = isRecord(message.params) ? message.params : {};
+          if (typeof params.protocolVersion !== "string") { protocolError(typeof message.id === "string" || typeof message.id === "number" ? message.id : null, -32602, "MCP_INITIALIZE_PROTOCOL_VERSION_REQUIRED"); return; }
+          try { negotiateEra(params.protocolVersion, config.candidate2026); } catch { protocolError(typeof message.id === "string" || typeof message.id === "number" ? message.id : null, -32602, "UNSUPPORTED_MCP_PROTOCOL_VERSION"); return; }
+          requestedProtocolVersion = params.protocolVersion;
+          negotiatedProtocolVersion = undefined;
+          initializationBarrier = new Promise<void>((resolve, reject) => { resolveInitialization = resolve; rejectInitialization = reject; });
+        } else if ((message.method === "initialized" || message.method === "notifications/initialized" || message.method === "tools/list") && negotiatedProtocolVersion === undefined) {
+          protocolError(typeof message.id === "string" || typeof message.id === "number" ? message.id : null, -32052, "MCP_INITIALIZE_REQUIRED"); return;
+        }
         if (message.id !== undefined) controlInFlight.set(message.id, message.method);
         upstreamWrite(message);
       }
@@ -119,8 +137,12 @@ export async function runStdioProxy(config: StdioProxyConfig, gate: InvocationGa
       return;
     }
     if (message.id !== undefined && (reservedIds.has(message.id) || inFlight.has(message.id) || controlInFlight.has(message.id))) { protocolError(message.id, -32600, "DUPLICATE_IN_FLIGHT_REQUEST_ID"); return; }
+    if (negotiatedProtocolVersion === undefined && initializationBarrier !== undefined) {
+      try { await initializationBarrier; } catch { return; }
+    }
+    if (negotiatedProtocolVersion === undefined) { protocolError(typeof message.id === "string" || typeof message.id === "number" ? message.id : null, -32052, "MCP_INITIALIZE_REQUIRED"); return; }
     if (message.id !== undefined) reservedIds.add(message.id);
-    const outcome = await gate.authorizeInvocation(message);
+    const outcome = await gate.authorizeInvocation(message, { protocolEra: negotiatedProtocolVersion });
     if (outcome.kind === "respond") { if (message.id !== undefined) reservedIds.delete(message.id); downstreamWrite(outcome.response); return; }
     if (outcome.kind === "notification") { if (outcome.request) upstreamWrite(outcome.request); if (message.id !== undefined) reservedIds.delete(message.id); return; }
     if (outcome.containmentRequired) {
@@ -151,6 +173,26 @@ export async function runStdioProxy(config: StdioProxyConfig, gate: InvocationGa
     if ((typeof message.id === "string" || typeof message.id === "number") && controlInFlight.has(message.id)) {
       const method = controlInFlight.get(message.id)!; controlInFlight.delete(message.id);
       if (!isJsonRpcResponse(message)) { protocolError(message.id, -32050, "Upstream malformed response"); return; }
+      if (method === "initialize") {
+        const result = isRecord(message.result) ? message.result : {};
+        const selected = result.protocolVersion;
+        try {
+          if (typeof selected !== "string" || requestedProtocolVersion === undefined || selected !== requestedProtocolVersion) throw new Error("MCP_PROTOCOL_NEGOTIATION_FAILED");
+          negotiateEra(selected, config.candidate2026);
+          negotiatedProtocolVersion = selected;
+          resolveInitialization?.();
+          resolveInitialization = undefined;
+          rejectInitialization = undefined;
+        } catch {
+          rejectInitialization?.(new Error("MCP_PROTOCOL_NEGOTIATION_FAILED"));
+          resolveInitialization = undefined;
+          rejectInitialization = undefined;
+          protocolError(message.id, -32052, "MCP_PROTOCOL_NEGOTIATION_FAILED");
+          closed = true;
+          child?.kill("SIGTERM");
+          return;
+        }
+      }
       if (method === "tools/list" && isRecord(message.result)) gate.observeToolsList(message.result);
       downstreamWrite(message); return;
     }

@@ -30,6 +30,24 @@ function objectRecord(value: unknown): value is Record<string, unknown> { return
 function required(schema: unknown): Set<string> { const value = record(schema).required; return new Set(Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []); }
 function validDigest(value: unknown): value is string { return typeof value === "string" && /^[A-Za-z0-9_-]{43}$/u.test(value); }
 function boundedString(value: unknown, maximum = 256): value is string { return typeof value === "string" && value.length > 0 && value.length <= maximum; }
+function normalizerError(value: unknown): string | undefined {
+  if (!objectRecord(value)) return "MALFORMED_NORMALIZER_METADATA";
+  const allowed = new Set(["fields", "declaredCapabilities", "declaredEffects", "declaredLabels", "inputSchema"]);
+  if (Object.keys(value).some(key => !allowed.has(key)) || !Array.isArray(value.fields)) return "UNKNOWN_NORMALIZER_METADATA";
+  const fields = value.fields as unknown[];
+  const fieldTypes = new Set(["path", "url", "command", "command-argv", "recipient", "data"]);
+  const accesses = new Set(["read", "write", "delete"]);
+  for (const field of fields) {
+    if (!objectRecord(field) || Object.keys(field).some(key => !["pointer", "type", "access", "methodPointer"].includes(key)) || typeof field.pointer !== "string" || !field.pointer.startsWith("/") || typeof field.type !== "string" || !fieldTypes.has(field.type) || (field.access !== undefined && (typeof field.access !== "string" || !accesses.has(field.access))) || (field.methodPointer !== undefined && (typeof field.methodPointer !== "string" || !field.methodPointer.startsWith("/")))) return "MALFORMED_NORMALIZER_METADATA";
+  }
+  for (const [key, values, allowedValues] of [["declaredCapabilities", value.declaredCapabilities, new Set(["fs.read", "fs.write", "fs.delete", "net.read", "net.send", "process.execute", "process.shell", "message.send", "secret.read"])], ["declaredEffects", value.declaredEffects, new Set(["data.observe", "data.modify", "data.delete", "external.read", "external.disclosure", "external.communication", "process.spawn", "command.interpretation", "persistent.change", "irreversible.action"])], ["declaredLabels", value.declaredLabels, new Set(["public", "internal", "secret", "credential", "private_key", "personal", "financial", "health", "source_code", "regulated", "unknown", "untrusted_content"])]] as const) {
+    if (values !== undefined && (!Array.isArray(values) || values.some(item => typeof item !== "string" || !allowedValues.has(item)))) return `UNKNOWN_NORMALIZER_${key.toUpperCase()}`;
+  }
+  const declaredCapabilities = Array.isArray(value.declaredCapabilities) ? value.declaredCapabilities : [];
+  const declaredEffects = Array.isArray(value.declaredEffects) ? value.declaredEffects : [];
+  if (fields.length === 0 && !(declaredCapabilities.length || declaredEffects.length)) return "UNKNOWN_NORMALIZER_AUTHORITY";
+  return undefined;
+}
 function validateTrust(trust: unknown, descriptor: ToolDescriptor): string | undefined {
   if (!objectRecord(trust)) return "INVALID_TRUST_METADATA";
   const allowed = new Set(["serverIdentity", "sourceType", "packageName", "packageVersion", "image", "imageDigest", "signature", "sbomReference", "dependencyEvidence", "containerEvidence", "outputSchemaDigest", "review"]);
@@ -82,6 +100,7 @@ export function detectDrift(previous: RegisteredTool | undefined, descriptor: To
   const normalizedDigest = digestJson(normalizer);
   if (previous.normalizerDigest !== normalizedDigest) entries.push({ pointer: "/normalizer", kind: "unknown", severity: "critical" });
   if (previous.descriptor.name !== descriptor.name) entries.push({ pointer: "/name", kind: "type_changed", severity: "critical" });
+  if (previous.descriptorDigest !== digestJson(descriptor)) entries.push({ pointer: "/descriptor", kind: "unknown", severity: "high" });
   return { changed: entries.length > 0, severity: strongest(entries.map(item => item.severity)), entries };
 }
 
@@ -121,7 +140,8 @@ export class PersistentToolRegistry implements DescriptorRegistry {
     const suppliedTrust = objectRecord(suppliedRaw) ? suppliedRaw as ToolTrustInventory : {};
     const trust = { ...storedDescriptor(stored?.descriptorJson ?? JSON.stringify({})).trust, ...suppliedTrust };
     const trustError = suppliedRaw !== undefined && !objectRecord(suppliedRaw) ? "INVALID_TRUST_METADATA" : validateTrust(trust, descriptor);
-    const quarantined = stored?.trustState === "quarantined" || drift.changed || trustError !== undefined;
+    const normalizerIssue = normalizerError(normalized);
+    const quarantined = stored?.trustState === "quarantined" || drift.changed || trustError !== undefined || normalizerIssue !== undefined;
     const schemaDigest = digestJson(descriptor.inputSchema); const outputSchemaDigest = descriptor.outputSchema === undefined ? undefined : digestJson(descriptor.outputSchema);
     const descriptorDigest = digestJson(descriptor);
     const registryVersion = `registry_${digestJson({ serverId: this.serverId, descriptorDigest, schemaDigest, normalizer: normalized }).slice(0, 24)}`;
@@ -129,7 +149,7 @@ export class PersistentToolRegistry implements DescriptorRegistry {
     const registryRecord: ToolRegistryRecord = {
       serverId: this.serverId, toolName: descriptor.name, descriptorDigest, inputSchemaDigest: schemaDigest,
       normalizedSchemaVersion: "1.0", capabilities: normalizer.declaredCapabilities ?? [], effects: normalizer.declaredEffects ?? [],
-      trustState: quarantined ? "quarantined" : (stored?.trustState === "reviewed" ? "reviewed" : "trusted"), ...(quarantined ? { quarantineReason: trustError ?? stored?.quarantineReason ?? `SCHEMA_DRIFT_${drift.severity.toUpperCase()}` } : {}),
+      trustState: quarantined ? "quarantined" : (stored?.trustState === "reviewed" ? "reviewed" : "trusted"), ...(quarantined ? { quarantineReason: trustError ?? normalizerIssue ?? stored?.quarantineReason ?? `SCHEMA_DRIFT_${drift.severity.toUpperCase()}` } : {}),
       firstSeenAt: stored?.firstSeenAt ?? now.toISOString(), lastSeenAt: now.toISOString(), registryVersion,
       descriptorJson: persistedDescriptor(descriptor, trust), normalizerJson: JSON.stringify(normalized),
     };
@@ -178,10 +198,13 @@ export class PersistentToolRegistry implements DescriptorRegistry {
       const descriptor = record(item) as unknown as ToolDescriptor;
       if (typeof descriptor.name !== "string" || descriptor.name.length === 0) continue;
       seen.add(descriptor.name);
+      if (Object.keys(descriptor).some(key => !["name", "title", "description", "inputSchema", "outputSchema", "annotations", "execution"].includes(key))) { this.quarantine(descriptor.name, "MALFORMED_TOOL_DESCRIPTOR", now); continue; }
       if (!record(descriptor.inputSchema)) { this.quarantine(descriptor.name, "MALFORMED_TOOL_DESCRIPTOR", now); continue; }
       const annotations = record(descriptor.annotations);
       const supplied = annotations["io.invock/normalizer"];
       if (!record(supplied) || !Array.isArray(record(supplied).fields)) { this.quarantine(descriptor.name, "MALFORMED_NORMALIZER_METADATA", now); continue; }
+      const issue = normalizerError({ ...(supplied as Record<string, unknown>), inputSchema: descriptor.inputSchema });
+      if (issue) { this.quarantine(descriptor.name, issue, now); continue; }
       const normalizer = supplied as NormalizationDescriptor;
       this.discover(descriptor, { ...normalizer, inputSchema: descriptor.inputSchema }, now);
     }

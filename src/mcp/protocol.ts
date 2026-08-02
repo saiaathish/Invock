@@ -1,4 +1,5 @@
 import type { ToolCallRequest, ToolResult } from "../core/types.js";
+import { negotiateProfile } from "../protocol/profile.js";
 
 export type McpProtocolEra =
   | { kind: "stable-2025"; negotiatedVersion: "2025-11-25" | "2025-06-18" | "2025-03-26"; stateModel: "session" }
@@ -36,12 +37,13 @@ export function isJsonRpcResponse(value: unknown): value is JsonRpcResponse {
 }
 
 export function negotiateEra(version: string | undefined, candidateEnabled = false): McpProtocolEra {
-  if (version === "2026-07-28") {
-    if (!candidateEnabled) throw new Error("MCP 2026-07-28 compatibility is disabled");
-    return { kind: "candidate-2026", negotiatedVersion: "2026-07-28", stateModel: "request" };
-  }
-  if (version === undefined || version === "2025-11-25" || version === "2025-06-18" || version === "2025-03-26") return { kind: "stable-2025", negotiatedVersion: version ?? "2025-11-25", stateModel: "session" };
-  throw new Error(`Unsupported MCP protocol version: ${version}`);
+  const requestedVersion = version ?? "2025-11-25";
+  if (requestedVersion === "2026-07-28" && !candidateEnabled) throw new Error("MCP 2026-07-28 compatibility is disabled");
+  const negotiated = negotiateProfile({ clientVersions: [requestedVersion], serverVersions: [requestedVersion], requestedVersion });
+  if (!negotiated.ok || !negotiated.profile) throw new Error(`Unsupported MCP protocol version: ${version ?? requestedVersion}`);
+  return negotiated.profile.generation === "candidate-2026"
+    ? { kind: "candidate-2026", negotiatedVersion: "2026-07-28", stateModel: "request" }
+    : { kind: "stable-2025", negotiatedVersion: negotiated.profile.version as "2025-11-25" | "2025-06-18" | "2025-03-26", stateModel: "session" };
 }
 
 /** Strict single-object JSON-RPC decoder shared by stdio and Streamable HTTP. */
