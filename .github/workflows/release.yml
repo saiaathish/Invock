@@ -113,7 +113,7 @@ jobs:
           }));
           NODE
           pnpm accessibility:certify 2>&1 | tee release-evidence/accessibility.log
-          pnpm containment:certify 2>&1 | tee release-evidence/containment.log
+          INVOCK_CONTAINMENT_IMAGE="invock-containment-candidate:${GITHUB_SHA}" pnpm containment:certify 2>&1 | tee release-evidence/containment.log
           INVOCK_CONTAINMENT_IMAGE="invock-containment-candidate:${GITHUB_SHA}" pnpm docker-containment-test 2>&1 | tee release-evidence/docker-containment.log
           pnpm release:rehearsal 2>&1 | tee release-evidence/release-rehearsal.log
           pnpm demo:certify 2>&1 | tee release-evidence/demo.log

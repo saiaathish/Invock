@@ -75,7 +75,9 @@ export async function certifyContainment(fixtureRoot = resolve(process.cwd(), "f
   const hostProbeDirectory = await mkdtemp(join(tmpdir(), "invock-containment-host-probe-"));
   const hostReadProbe = join(hostProbeDirectory, "host-only.txt");
   await writeFile(hostReadProbe, "host-only-containment-probe\n", { mode: 0o600 });
-  const imageDigest = await localImageDigest(LOCAL_CERTIFICATION_IMAGE);
+  const configuredImage = process.env.INVOCK_CONTAINMENT_IMAGE?.trim();
+  const certificationImage = configuredImage || LOCAL_CERTIFICATION_IMAGE;
+  const imageDigest = await localImageDigest(certificationImage);
   let result: ContainmentResult;
   try {
     result = await runContained({
@@ -92,7 +94,7 @@ export async function certifyContainment(fixtureRoot = resolve(process.cwd(), "f
         maxPids: 32,
         memoryLimitMb: 64,
         cpuSeconds: 1,
-        ...(imageDigest ? { image: LOCAL_CERTIFICATION_IMAGE, imageDigest } : {}),
+        ...(imageDigest ? { image: certificationImage, imageDigest } : {}),
       },
       command: "adversarial.js",
       env: { INVOCK_HOST_READ_PROBE: hostReadProbe, INVOCK_WRITE_TARGET: writeTarget },
