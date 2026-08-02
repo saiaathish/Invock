@@ -50,10 +50,19 @@ test("Docker and final certification commands have hard time bounds", () => {
 test("the authoritative gate invokes a supported protocol command and derives secret-scan status", () => {
   const packageJson = readFileSync(join(root, "package.json"), "utf8");
   const final = readFileSync(join(root, "scripts/final-certify.ts"), "utf8");
+  const release = readFileSync(join(root, ".github/workflows/release.yml"), "utf8");
   assert.match(packageJson, /"protocol-certify"\s*:/u);
   assert.match(final, /Supported protocol certification command/u);
   assert.match(final, /name: "Secret scan"/u);
   assert.match(final, /Secret scan: PASS/u);
+  assert.doesNotMatch(release, /workflow_dispatch/u);
+  assert.match(release, /RELEASE_REF_PROTECTED/u);
+  assert.match(release, /name: release-provenance/u);
+  assert.match(release, /actions\/download-artifact@[0-9a-f]{40}/u);
+  assert.match(release, /actions\/attest-sbom@[0-9a-f]{40}/u);
+  assert.match(release, /node --import tsx scripts\/supply-chain\.ts --sign > release-evidence\/supply-chain\.json/u);
+  const publish = release.slice(release.indexOf("  publish:"));
+  assert.doesNotMatch(publish, /actions\/checkout@/u);
 });
 
 test("certification process cleanup rejects asynchronous child execution", () => {
