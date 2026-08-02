@@ -90,7 +90,28 @@ jobs:
           pnpm build 2>&1 | tee release-evidence/build.log
           pnpm certify 2>&1 | tee release-evidence/certify.log
           pnpm mutation-review 2>&1 | tee release-evidence/mutation-review.log
-          pnpm arena 2>&1 | tee release-evidence/arena.log
+          # Arena emits one complete JSON record with raw outcomes. Keep the
+          # full record in the immutable artifact instead of sending a >64 KiB
+          # line through the Actions log transport.
+          pnpm arena > release-evidence/arena.log 2>&1
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const line = readFileSync('release-evidence/arena.log', 'utf8')
+            .split(/\r?\n/u)
+            .find(candidate => candidate.startsWith('{"version":2,"benchmark":"invock-arena"'));
+          if (!line) throw new Error('Arena benchmark JSON is missing');
+          const report = JSON.parse(line);
+          if (report.benchmark !== 'invock-arena' || typeof report.deterministicDigest !== 'string' || !Number.isFinite(report.statistics?.protectedLatency?.p95)) {
+            throw new Error('Measured Arena benchmark evidence is incomplete');
+          }
+          console.log(JSON.stringify({
+            benchmark: report.benchmark,
+            scenarioCount: report.metrics?.scenarioCount,
+            repetitions: report.repetitions,
+            protectedP95Ms: report.statistics.protectedLatency.p95,
+            deterministicDigest: report.deterministicDigest,
+          }));
+          NODE
           pnpm accessibility:certify 2>&1 | tee release-evidence/accessibility.log
           pnpm containment:certify 2>&1 | tee release-evidence/containment.log
           INVOCK_CONTAINMENT_IMAGE="invock-containment-candidate:${GITHUB_SHA}" pnpm docker-containment-test 2>&1 | tee release-evidence/docker-containment.log
