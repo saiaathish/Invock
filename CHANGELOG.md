@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.8 — 2026-08-02
+
+- Made downloaded release-evidence validation independent of the source checkout's development-only `tsx` dependency.
+
 ## 0.1.7 — 2026-08-02
 
 - Fixed the release-provenance workflow's signed SBOM verification import path and prepared the exact merged release candidate for external provenance verification.
