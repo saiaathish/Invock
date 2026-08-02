@@ -1,6 +1,8 @@
 {
-  "name": "invock",
+  "name": "@invock/cli",
   "version": "0.1.8",
+  "bin": { "invock": "dist/src/cli.js" },
+  "files": ["dist", "policies", "README.md", "SECURITY.md", "LICENSE"],
   "private": true,
   "description": "Deterministic MCP tool-invocation reference monitor",
   "type": "module",
@@ -35,6 +37,9 @@
     "expanded-certify": "node --import tsx scripts/expanded-certify.ts",
     "release:rehearsal": "node --import tsx scripts/release-rehearsal.ts",
     "final-certify": "node --import tsx scripts/final-certify.ts",
+    "cli:certify": "node --import tsx scripts/cli-certify.ts",
+    "zdr:certify": "node --import tsx scripts/zdr-certify.ts",
+    "zdr:audit": "node --import tsx scripts/zdr-audit.ts",
     "protocol-certify": "INVOCK_TEST_MODE=1 node --import tsx --test test/protocol/protocol.test.ts"
   },
   "dependencies": {

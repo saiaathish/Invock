@@ -1,5 +1,7 @@
-import { readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+#!/usr/bin/env node
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parsePolicyYaml, compilePolicy } from "./core/policy.js";
 import { InvocationGate, StaticDescriptorRegistry, type DescriptorRegistry } from "./gateway/engine.js";
 import { runStdioProxy } from "./gateway/stdio.js";
@@ -23,8 +25,13 @@ import type { CapabilityLease, IntentCapsule } from "./authority/types.js";
 import { IdentityAuthority } from "./identity/index.js";
 import { scanSupplyChain } from "./supplychain/index.js";
 import { PersistentToolRegistry } from "./registry/registry.js";
+import { detectAgent, installAgent, uninstallAgent, verifyAgent, type SupportedAgent } from "./agents.js";
+import { spawn } from "node:child_process";
+import { addProcessor, evaluatePrivacy, loadPrivacyConfig, pseudonymize, removeProcessor, setPrivacyMode, verifyPrivacyContract, type InvockPrivacyMode, type ProcessorRetentionProfile } from "./privacy/index.js";
 
-const root = process.cwd();
+const moduleRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const root = existsSync(resolve(moduleRoot, "policies/default.yaml")) ? moduleRoot : process.cwd();
+const version = "0.1.8";
 const unsupportedIntegrations = ["enterprise-cloud-control-plane", "SSO/SCIM", "remote-evidence-anchoring"];
 
 function help(): void {
@@ -32,6 +39,7 @@ function help(): void {
 
 Usage:
   invock --help
+  invock --version
   invock init [--state <path>]
   invock scan [--state <path>]
   invock supply-chain scan [--root <path>]
@@ -42,6 +50,19 @@ Usage:
   invock policy activate <draft-json> --approved-by <name> --approval-id <id> --statement <text> [--output <path>]
   invock policy rollback <policy-id>
   invock doctor [--database <path>] [--key-directory <path>]
+  invock status [--database <path>] [--key-directory <path>]
+  invock stats [--json] [--database <path>] [--key-directory <path>]
+  invock proxy [--port <port>] [--host 127.0.0.1]
+  invock dashboard [--no-open]
+  invock privacy status
+  invock privacy mode set local-zdr|end-to-end-zdr
+  invock privacy verify-local|verify-end-to-end
+  invock privacy processors list|add <profile.json>|remove <id>
+  invock privacy chain inspect
+  invock privacy demo
+  invock install|wrap <claude|codex|cursor>
+  invock verify <claude|codex|cursor>
+  invock uninstall|unwrap <claude|codex|cursor>
   invock receipts verify [--database <path>] [--key-directory <path>]
   invock receipts rotate-key [--database <path>] [--key-directory <path>]
   invock receipts export --format json|ndjson|markdown [--session-id <id>] [--database <path>] [--key-directory <path>]
@@ -64,6 +85,26 @@ Usage:
 
 Local boundary: JSON state, SQLite receipts, and loopback API only. Enterprise/cloud integrations are reported as unsupported.`);
 }
+
+function cliStatePath(): string { return process.env.INVOCK_HOME ?? resolve(process.env.HOME ?? root, ".invock"); }
+function writeCliState(agent?: string): string {
+  const path = ensureCliState();
+  const directory = cliStatePath(); mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const current = readFileSync(path, "utf8");
+  if (agent && !JSON.parse(current).integrations?.[agent]) {
+    const state = JSON.parse(current) as { integrations: Record<string, { installedAt: string }> };
+    state.integrations[agent] = { installedAt: new Date().toISOString() };
+    writeFileSync(path, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 }); chmodSync(path, 0o600);
+  }
+  return path;
+}
+function ensureCliState(): string {
+  const directory = cliStatePath(); mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const path = join(directory, "cli-state.json");
+  try { JSON.parse(readFileSync(path, "utf8")); } catch { writeFileSync(path, '{\n  "integrations": {}\n}\n', { mode: 0o600 }); }
+  chmodSync(path, 0o600); return path;
+}
+function readCliState(): { integrations: Record<string, unknown> } { ensureCliState(); return JSON.parse(readFileSync(join(cliStatePath(), "cli-state.json"), "utf8")) as { integrations: Record<string, unknown> }; }
 
 function usage(): number { console.error("Run `invock --help` for usage."); return 64; }
 function readJson<T>(file: string): T { return JSON.parse(readFileSync(resolve(root, file), "utf8")) as T; }
@@ -105,7 +146,8 @@ function staticDescriptors(): DescriptorRegistry {
   });
 }
 function gate(store: InvockStore, descriptors: DescriptorRegistry = staticDescriptors(), options: { serverId?: string; trustedApproverKeys?: TrustedApproverKeys } = {}) {
-  return new InvocationGate(compilePolicy(parsePolicyYaml(readFileSync(resolve(root, "policies/default.yaml"), "utf8"))), descriptors, store, { cwd: root, projectRoot: root, organizationDomains: ["example.com"], sessionId: "stdio-local", ...(options.serverId ? { serverId: options.serverId } : {}), principal: { principalId: "local-user", clientId: "invock-cli", scopes: ["*"] } }, { requireAuthority: true, requireIdentity: true, ...(options.trustedApproverKeys ? { trustedApproverKeys: options.trustedApproverKeys } : {}) });
+  const privacy = loadPrivacyConfig(process.env.INVOCK_PRIVACY_DIR ?? resolve(root, ".invock")); const privacyEvaluation = evaluatePrivacy(privacy, privacy.processors.map(profile => profile.id));
+  return new InvocationGate(compilePolicy(parsePolicyYaml(readFileSync(resolve(root, "policies/default.yaml"), "utf8"))), descriptors, store, { cwd: root, projectRoot: root, organizationDomains: ["example.com"], sessionId: "stdio-local", privacyBlocked: privacyEvaluation.verdict === "BLOCK", privacyMetadata: { privacyMode: privacy.mode, privacyContractDigest: privacy.contract.digest, privacyChainDigest: privacyEvaluation.chainDigest, privacyProcessorProfileDigests: privacyEvaluation.processorProfileDigests }, ...(options.serverId ? { serverId: options.serverId } : {}), principal: { principalId: "local-user", clientId: "invock-cli", scopes: ["*"] } }, { requireAuthority: true, requireIdentity: true, ...(options.trustedApproverKeys ? { trustedApproverKeys: options.trustedApproverKeys } : {}) });
 }
 
 function readTrustedApproverKeys(path: string | undefined): TrustedApproverKeys {
@@ -143,6 +185,10 @@ function simulatePolicy(draft: PolicyDraft, observations: readonly PolicyObserva
 async function serve(values: string[]): Promise<void> {
   const strictAuthority = true;
   values = values.filter(value => value !== "--strict-authority");
+  const host = takeTextOption(values, "--host") ?? "127.0.0.1";
+  const portText = takeTextOption(values, "--port");
+  const port = portText === undefined ? undefined : Number(portText);
+  if (host !== "127.0.0.1" || (port !== undefined && (!Number.isInteger(port) || port < 1 || port > 65535))) throw new Error("server requires loopback host and valid port");
   const config = runtime(values); const trustedApproverKeys = readTrustedApproverKeys(config.trustedApproversPath); const store = new InvockStore(config.database, config);
   const identityAuthority = new IdentityAuthority(join(store.keyDirectory, "identity-state.json"));
   if (values.length > 0 && values[0] === "--stdio") {
@@ -158,7 +204,8 @@ async function serve(values: string[]): Promise<void> {
     const apiLeases = new Map<string, CapabilityLease>();
     const apiLeaseSessions = new Map<string, string>();
     const apiSessionId = config.sessionId ?? newId("api-session");
-    const api = await startApi(store, { sessionId: apiSessionId, gate: monitor, resolveRuntime: async (input: ApiAuthorizeInput): Promise<ApiRuntimeResolution> => {
+    const privacy = loadPrivacyConfig(process.env.INVOCK_PRIVACY_DIR ?? resolve(root, ".invock")); const privacyEvaluation = evaluatePrivacy(privacy, privacy.processors.map(profile => profile.id));
+    const api = await startApi(store, { host, ...(port === undefined ? {} : { port }), privacyState: { mode: privacy.mode, verdict: privacyEvaluation.verdict, contractDigest: privacy.contract.digest, chainDigest: privacyEvaluation.chainDigest }, sessionId: apiSessionId, gate: monitor, resolveRuntime: async (input: ApiAuthorizeInput): Promise<ApiRuntimeResolution> => {
       if (strictAuthority && (!input.agent || !input.projectId || !input.sessionId || input.intentCapsule === undefined || input.authorityBinding === undefined || !input.capabilityLeases)) return { denial: { verdict: "BLOCK", reasonCodes: ["STRICT_AUTHORITY_REQUIRED"] } };
       let identityContext: ReturnType<IdentityAuthority["executionContext"]>;
       let identityBinding: ReturnType<IdentityAuthority["evidenceBinding"]>;
@@ -208,9 +255,43 @@ async function serve(values: string[]): Promise<void> {
 
 async function main(argv: string[]): Promise<number> {
   const [command, subcommand, ...initialRest] = argv;
-  if (argv.includes("--help") || argv.includes("-h")) { help(); return 0; }
+  if (argv.includes("--help") || argv.includes("-h") || command === "help") { help(); return 0; }
+  if (command === "--version" || command === "-V" || command === "version") { console.log(version); return 0; }
   const rest = [...initialRest];
   if (!command) { help(); return 0; }
+  if (command === "status") { const state = readCliState(); console.log(JSON.stringify({ ready: true, statePath: join(cliStatePath(), "cli-state.json"), integrations: state.integrations }, null, 2)); return 0; }
+  if (command === "privacy") {
+    const privacyDir = process.env.INVOCK_PRIVACY_DIR ?? resolve(root, ".invock"); const action = subcommand; const values = [...rest].filter((item): item is string => item !== undefined); const config = loadPrivacyConfig(privacyDir);
+    if (action === "status") { console.log(JSON.stringify({ mode: config.mode, contractId: config.contractId, contractDigest: config.contract.digest, processors: config.processors.map(profile => ({ id: profile.id, type: profile.processorType, retentionClass: profile.retentionClass })) }, null, 2)); return 0; }
+    if (action === "mode" && values[0] === "set" && values[1]) { const normalized = values[1].toLowerCase() === "local-zdr" ? "LOCAL_ZDR" : values[1].toLowerCase() === "end-to-end-zdr" ? "END_TO_END_ZDR" : values[1]; const next = setPrivacyMode(privacyDir, normalized as InvockPrivacyMode); console.log(JSON.stringify({ mode: next.mode, contractId: next.contractId, contractDigest: next.contract.digest }, null, 2)); return 0; }
+    if (action === "verify-local") { const evaluation = evaluatePrivacy({ ...config, mode: "LOCAL_ZDR" }); console.log(JSON.stringify(evaluation, null, 2)); return evaluation.localZdrSatisfied && verifyPrivacyContract(config) ? 0 : 1; }
+    if (action === "verify-end-to-end") { const evaluation = evaluatePrivacy(config, config.processors.map(profile => profile.id)); console.log(JSON.stringify(evaluation, null, 2)); return evaluation.endToEndZdrSatisfied && verifyPrivacyContract(config) ? 0 : 1; }
+    if (action === "processors" && values[0] === "list") { console.log(JSON.stringify(config.processors.map(profile => ({ id: profile.id, version: profile.version, processorType: profile.processorType, retentionClass: profile.retentionClass, receivesCustomerContent: profile.receivesCustomerContent })), null, 2)); return 0; }
+    if (action === "processors" && values[0] === "add" && values[1]) { const profile = readJson<ProcessorRetentionProfile>(values[1]); const next = addProcessor(config, profile); console.log(JSON.stringify({ added: profile.id, count: next.processors.length }, null, 2)); return 0; }
+    if (action === "processors" && values[0] === "remove" && values[1]) { const next = removeProcessor(config, values[1]); console.log(JSON.stringify({ removed: values[1], count: next.processors.length }, null, 2)); return 0; }
+    if (action === "chain" && values[0] === "inspect") { console.log(JSON.stringify(evaluatePrivacy(config, config.processors.map(profile => profile.id)), null, 2)); return 0; }
+    if (action === "demo") { const local = evaluatePrivacy({ ...config, mode: "LOCAL_ZDR" }); const endToEnd = evaluatePrivacy({ ...config, mode: "END_TO_END_ZDR" }, ["unknown-demo-processor"]); console.log(JSON.stringify({ local, endToEnd, synthetic: true, contentPersisted: false, pseudonym: pseudonymize(`demo-${Date.now()}`, config.pseudonymKeyPath) }, null, 2)); return local.verdict === "ALLOW" && endToEnd.verdict === "BLOCK" ? 0 : 1; }
+    return usage();
+  }
+  if (command === "stats") { const values = [subcommand, ...rest].filter((item): item is string => item !== undefined); const json = values.includes("--json"); const config = runtime(values.filter(value => value !== "--json")); if (values.some(value => value.startsWith("--") && value !== "--json")) return usage(); const store = new InvockStore(config.database, config); try { const evidence = buildEvidenceBundle(store); const result = { status: "ready", database: config.database, receipts: evidence.receipts.length, generatedAt: new Date().toISOString() }; console.log(json ? JSON.stringify(result, null, 2) : `Invock Stats\n\nReceipts: ${result.receipts}\nDatabase: ${result.database}`); } finally { store.close(); } return 0; }
+  if (command === "proxy") { const values = [subcommand, ...rest].filter((item): item is string => item !== undefined); const host = takeTextOption(values, "--host") ?? "127.0.0.1"; const port = takeTextOption(values, "--port") ?? "8787"; if (host !== "127.0.0.1") throw new Error("proxy refuses non-loopback host; use 127.0.0.1"); if (values.length > 0) return usage(); const privacy = loadPrivacyConfig(process.env.INVOCK_PRIVACY_DIR ?? resolve(root, ".invock")); const evaluation = evaluatePrivacy(privacy, privacy.processors.map(profile => profile.id)); if (evaluation.verdict === "BLOCK") throw new Error(`UPSTREAM_BLOCKED_BY_PRIVACY: ${evaluation.reasonCodes.join(",")}`); console.error(`Invock Gateway\n\nStatus: RUNNING\nAddress: http://${host}:${port}\nPolicy: default-development\nPrivacy: ${privacy.mode}\nFail closed: YES\nReceipt signing: ACTIVE\nContent logging: DISABLED\n\nPress Ctrl+C to stop.`); await serve(["--port", port]); return 0; }
+  if (command === "dashboard") { const values = [subcommand, ...rest].filter((item): item is string => item !== undefined).filter(value => value !== "--no-open"); await serve(values); return 0; }
+  if ((command === "install" || command === "wrap") && subcommand) {
+    if (!["claude", "codex", "cursor"].includes(subcommand)) throw new Error("unsupported agent");
+    const agent = subcommand as SupportedAgent; const detection = detectAgent(agent); const values = [...rest]; const dryRun = values.includes("--dry-run");
+    if (command === "install") { const result = dryRun ? { changed: false, backupPaths: [], modifiedPaths: [], details: ["dry-run"] } : installAgent(agent, resolve(process.argv[1] ?? "invock"), "http://127.0.0.1:8787"); console.log(JSON.stringify({ agent, detection, ...result }, null, 2)); return 0; }
+    if (!detection.installed || !detection.commandPath) throw new Error(`${agent} is not installed; install the real client before wrapping it`);
+    const separator = values.indexOf("--"); const passthrough = separator >= 0 ? values.slice(separator + 1) : values.filter(value => value !== "--dry-run");
+    const privacy = loadPrivacyConfig(process.env.INVOCK_PRIVACY_DIR ?? resolve(root, ".invock")); const privacyEvaluation = evaluatePrivacy(privacy, privacy.processors.map(profile => profile.id)); if (privacyEvaluation.verdict === "BLOCK") throw new Error(`UPSTREAM_BLOCKED_BY_PRIVACY: ${privacyEvaluation.reasonCodes.join(",")}`);
+    const gateway = spawn(process.execPath, [process.argv[1] ?? "invock", "serve", "--port", "8787"], { stdio: ["ignore", "ignore", "pipe"], env: process.env });
+    await new Promise<void>(resolveReady => setTimeout(resolveReady, 350));
+    if (gateway.exitCode !== null) throw new Error("Invock gateway failed to start");
+    console.error(`Invock protected session\n\nAgent: ${agent}\nMode: Enforce\nPrivacy: ${privacy.mode}\nGateway: http://127.0.0.1:8787\nPolicy: default-development\nReceipt signing: Active\n\nLaunching ${agent}...`);
+    const child = spawn(detection.commandPath, passthrough, { stdio: "inherit", env: { ...process.env, INVOCK_GATEWAY_URL: "http://127.0.0.1:8787" } });
+    return await new Promise<number>(resolveExit => { child.once("error", error => { console.error(error.message); gateway.kill("SIGTERM"); resolveExit(1); }); child.once("exit", (code, signal) => { gateway.kill("SIGTERM"); resolveExit(code ?? (signal ? 1 : 0)); }); });
+  }
+  if ((command === "uninstall" || command === "unwrap") && subcommand) { if (!["claude", "codex", "cursor"].includes(subcommand)) throw new Error("unsupported agent"); const result = uninstallAgent(subcommand as SupportedAgent); console.log(JSON.stringify({ agent: subcommand, ...result }, null, 2)); return 0; }
+  if (command === "verify" && subcommand) { if (!["claude", "codex", "cursor"].includes(subcommand)) throw new Error("unsupported agent"); const result = verifyAgent(subcommand as SupportedAgent, resolve(process.argv[1] ?? "invock")); console.log(JSON.stringify(result, null, 2)); return result.verified ? 0 : 1; }
   if (command === "identity" && subcommand === "enroll") {
     const values = [...rest];
     const agentId = takeTextOption(values, "--agent");
@@ -306,7 +387,7 @@ async function main(argv: string[]): Promise<number> {
   if (command === "receipts" && subcommand === "export") { const values = [...rest]; const format = formatOption(values); const sessionId = takeTextOption(values, "--session-id"); const config = runtime(values); if (values.length > 0) return usage(); const store = new InvockStore(config.database, config); try { process.stdout.write(renderEvidenceBundle(buildEvidenceBundle(store, sessionId), format)); } finally { store.close(); } return 0; }
   if (command === "evidence" && subcommand === "bundle") { const values = [...rest]; const sessionId = values[0] && !values[0].startsWith("--") ? values.shift() : undefined; const format = formatOption(values); const config = runtime(values); if (values.length > 0) return usage(); const store = new InvockStore(config.database, config); try { process.stdout.write(renderEvidenceBundle(buildEvidenceBundle(store, sessionId), format)); } finally { store.close(); } return 0; }
   if (command === "serve" || command === "start") { const values = [subcommand, ...rest].filter((item): item is string => item !== undefined); await serve(values); return 0; }
-  if (command === "judge") { await demo(false); await demo(true); console.log(JSON.stringify({ status: "local-only", unsupportedIntegrations }, null, 2)); return 0; }
+  if (command === "judge" || (command === "demo" && !subcommand)) { await demo(false); await demo(true); console.log(JSON.stringify({ status: "local-only", unsupportedIntegrations }, null, 2)); return 0; }
   if (command === "demo" && (subcommand === "safe" || subcommand === "attack")) { await demo(subcommand === "attack"); return 0; }
   if (command === "forge") { const observations = rest[0] ? readJson<PolicyObservation[]>(rest[0]) : []; console.log(JSON.stringify(forgePolicy(observations), null, 2)); return 0; }
   if (command === "guard" && subcommand) { const findings = inspectWorkflow({ source: readFileSync(resolve(root, subcommand), "utf8"), path: subcommand }); console.log(JSON.stringify({ ok: findings.length === 0, findings }, null, 2)); return findings.length > 0 ? 1 : 0; }

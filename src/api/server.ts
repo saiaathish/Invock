@@ -56,6 +56,7 @@ export interface ApiOptions {
   readonly resolveRuntime?: ApiRuntimeResolver;
   /** Runs only for the explicit execution endpoint when the canonical gate returns a forwardable call. */
   readonly onContainedForward?: ApiContainedForwardHandler;
+  readonly privacyState?: { readonly mode: "LOCAL_ZDR" | "END_TO_END_ZDR"; readonly verdict: "ALLOW" | "BLOCK"; readonly contractDigest: string; readonly chainDigest: string };
 }
 function json(response: ServerResponse, status: number, value: unknown): void { response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" }).end(JSON.stringify(value)); }
 async function body(request: IncomingMessage): Promise<Record<string, unknown>> {
@@ -169,6 +170,7 @@ code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 <h1>Invock <small>local reference monitor</small></h1>
 <p>Enter the local dashboard token to inspect redacted activity and approvals.</p>
 <div id="status" role="status" aria-live="polite">Enter a token to load the dashboard.</div>
+<section><h2>Privacy</h2><div id="privacy">Loading content-free privacy state.</div></section>
 <section>
 <label for="token">Bearer token <input id="token" type="password" autocomplete="off"></label>
 <button id="load-button" type="button" onclick="load()">Load</button>
@@ -185,6 +187,8 @@ async function load(){
   status.textContent='Loading activity and approvals.';
   main.setAttribute('aria-busy','true');
   try{
+    let p=await fetch('/api/v1/privacy');
+    if(p.ok){let z=await p.json();document.querySelector('#privacy').textContent=z.mode+' · '+z.verdict;}
     let a=await fetch('/api/v1/activity',{headers:h()});
     if(!a.ok) throw new Error('Activity request failed');
     let x=await a.json();
@@ -216,6 +220,7 @@ export function startApi(store: InvockStore, options: ApiOptions = {}): Promise<
     if (origin && origin !== `http://${hostHeader}` && !(options.allowedOrigins ?? []).includes(origin)) { json(response, 403, { error: "invalid_origin" }); return; }
     if (url.pathname === "/") { response.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-security-policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'" }).end(dashboard()); return; }
     if (url.pathname === "/api/v1/health") { json(response, 200, { status: "ok" }); return; }
+    if (request.method === "GET" && url.pathname === "/api/v1/privacy") { json(response, 200, { mode: options.privacyState?.mode ?? "LOCAL_ZDR", verdict: options.privacyState?.verdict ?? "ALLOW", contractDigest: options.privacyState?.contractDigest ?? "unconfigured", chainDigest: options.privacyState?.chainDigest ?? "unconfigured" }); return; }
     if (!safeTokenMatch(request.headers.authorization, token)) { json(response, 401, { error: "unauthorized" }); return; }
     const remote = request.socket.remoteAddress ?? "unknown"; const now = Date.now(); const current = attempts.get(remote); const bounded = !current || current.resetAt < now ? { count: 0, resetAt: now + 60_000 } : current; bounded.count++; attempts.set(remote, bounded);
     if (bounded.count > 120) { json(response, 429, { error: "rate_limited" }); return; }
