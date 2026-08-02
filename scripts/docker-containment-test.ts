@@ -113,7 +113,7 @@ async function main(): Promise<number> {
 
   const attack = "const fs=require('node:fs'); let writeDenied=false; try{fs.writeFileSync('/etc/invock-attack','x')}catch{writeDenied=true} const controller=new AbortController(); setTimeout(()=>controller.abort(),300); fetch('http://example.com',{signal:controller.signal}).then(()=>process.exit(1)).catch(()=>process.exit(writeDenied?0:1));";
   const containerName = `invock-containment-certify-${process.pid}-${Date.now()}`;
-  const result = spawnSync("docker", ["run", "--rm", "--name", containerName, "--network", "none", "--read-only", "--memory", "64m", "--cpus", "0.5", "--pids-limit", "64", "--cap-drop=ALL", "--security-opt", "no-new-privileges", image, "-e", attack], { encoding: "utf8", timeout: ATTACK_TIMEOUT_MS, killSignal: "SIGKILL" });
+  const result = spawnSync("docker", ["run", "--rm", "--name", containerName, "--network", "none", "--read-only", "--memory", "64m", "--cpus", "0.5", "--pids-limit", "64", "--cap-drop=ALL", "--security-opt", "no-new-privileges", digest, "-e", attack], { encoding: "utf8", timeout: ATTACK_TIMEOUT_MS, killSignal: "SIGKILL" });
   const cleanup = timedOut(result.error) ? cleanupContainer(containerName) : "completed";
   const directPassed = result.status === 0;
   const product = directPassed ? await runProductProbe(image, digest) : undefined;
