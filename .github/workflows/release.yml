@@ -4,25 +4,25 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:
 
 permissions:
   contents: read
-  id-token: write
-  attestations: write
-  packages: write
 
 concurrency:
   group: invock-release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  release:
+  build-candidate:
+    name: build credential-free release candidate
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
 
@@ -31,27 +31,52 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
 
-      - name: Validate release ref
+      - name: Validate protected release ref
         shell: bash
+        env:
+          RELEASE_REF_PROTECTED: ${{ github.ref_protected }}
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
-            [[ "$GITHUB_REF_NAME" == "main" ]] || { echo "Manual provenance runs are allowed only from main" >&2; exit 1; }
-            git fetch --no-tags origin main
-            release_commit="$(git rev-parse origin/main)"
-          else
-            [[ "$GITHUB_REF_TYPE" == "tag" ]] || { echo "Release provenance requires a tag push" >&2; exit 1; }
-            [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Release tag must be a protected semantic version such as v0.1.0" >&2; exit 1; }
-            git fetch --no-tags origin main
-            git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "Tagged commit is not an ancestor of origin/main" >&2; exit 1; }
-            package_version="$(node -p "require('./package.json').version")"
-            [[ "$package_version" == "${GITHUB_REF_NAME#v}" ]] || { echo "Tag/package version mismatch: $GITHUB_REF_NAME vs $package_version" >&2; exit 1; }
-            release_commit="$GITHUB_SHA"
-          fi
-          printf 'release_ref=%s\nrelease_commit=%s\n' "$GITHUB_REF_NAME" "$release_commit" | tee release-ref.txt
+          [[ "$GITHUB_EVENT_NAME" == "push" ]] || { echo "Release provenance requires a tag push event" >&2; exit 1; }
+          [[ "$GITHUB_REF_TYPE" == "tag" ]] || { echo "Release provenance requires a tag ref" >&2; exit 1; }
+          [[ "$RELEASE_REF_PROTECTED" == "true" ]] || { echo "Release tag is not protected by a repository ruleset" >&2; exit 1; }
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Release tag must be a semantic version such as v0.1.0" >&2; exit 1; }
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]] || { echo "Checked-out commit does not match the immutable event SHA" >&2; exit 1; }
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "Tagged commit is not an ancestor of origin/main" >&2; exit 1; }
+          package_version="$(node -p "require('./package.json').version")"
+          [[ "$package_version" == "${GITHUB_REF_NAME#v}" ]] || { echo "Tag/package version mismatch: $GITHUB_REF_NAME vs $package_version" >&2; exit 1; }
+          printf 'release_ref=%s\nrelease_commit=%s\n' "$GITHUB_REF_NAME" "$GITHUB_SHA" | tee release-ref.txt
 
       - name: Install frozen dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Install browser runtime for accessibility certification
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Build and archive exact containment candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-evidence
+          image="invock-containment-candidate:${GITHUB_SHA}"
+          docker build --pull --file docker/containment.Dockerfile --tag "$image" --label "org.opencontainers.image.revision=$GITHUB_SHA" . 2>&1 | tee release-evidence/docker-build.log
+          local_id="$(docker image inspect "$image" --format '{{.Id}}')"
+          [[ "$local_id" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "container image ID is not a sha256 digest" >&2; exit 1; }
+          docker image inspect "$image" > release-evidence/docker-image-inspect.json
+          docker save --output invock-containment.tar "$image"
+          sha256sum invock-containment.tar > release-evidence/candidate-image-sha256.txt
+          sha256sum pnpm-lock.yaml docker/containment.Dockerfile > release-evidence/input-sha256sums.txt
+          cat > release-evidence/candidate-manifest.json <<JSON
+          {
+            "schema": "invock/release-candidate/v1",
+            "repository": "$GITHUB_REPOSITORY",
+            "commit": "$GITHUB_SHA",
+            "ref": "$GITHUB_REF",
+            "localImageId": "$local_id",
+            "candidateArchive": "invock-containment.tar"
+          }
+          JSON
 
       - name: Run release checks and generate evidence
         shell: bash
@@ -59,42 +84,94 @@ jobs:
           set -euo pipefail
           mkdir -p release-evidence
           cp release-ref.txt release-evidence/release-ref.txt
-          pnpm exec playwright install --with-deps chromium 2>&1 | tee release-evidence/playwright-install.log
           pnpm typecheck 2>&1 | tee release-evidence/typecheck.log
           pnpm lint 2>&1 | tee release-evidence/lint.log
           pnpm test 2>&1 | tee release-evidence/test.log
           pnpm build 2>&1 | tee release-evidence/build.log
-          pnpm supply-chain 2>&1 | tee release-evidence/supply-chain.json
+          pnpm certify 2>&1 | tee release-evidence/certify.log
+          pnpm mutation-review 2>&1 | tee release-evidence/mutation-review.log
+          pnpm arena 2>&1 | tee release-evidence/arena.log
+          pnpm accessibility:certify 2>&1 | tee release-evidence/accessibility.log
+          pnpm containment:certify 2>&1 | tee release-evidence/containment.log
+          INVOCK_CONTAINMENT_IMAGE="invock-containment-candidate:${GITHUB_SHA}" pnpm docker-containment-test 2>&1 | tee release-evidence/docker-containment.log
+          pnpm release:rehearsal 2>&1 | tee release-evidence/release-rehearsal.log
+          pnpm demo:certify 2>&1 | tee release-evidence/demo.log
+          node --import tsx scripts/supply-chain.ts --sign > release-evidence/supply-chain.json
+          pnpm audit --prod --json > release-evidence/advisory.json
+          test_count="$(awk '/^# tests [0-9]+$/ { count=$3 } END { print count }' release-evidence/test.log)"
+          [[ "$test_count" =~ ^[1-9][0-9]*$ ]] || { echo "Complete TAP test count missing" >&2; exit 1; }
+          pnpm claim-consistency -- --test-count "$test_count" --final-verdict NOT_READY 2>&1 | tee release-evidence/claim-consistency.log
           node --input-type=module <<'NODE'
           import { readFileSync, writeFileSync } from 'node:fs';
           const report = JSON.parse(readFileSync('release-evidence/supply-chain.json', 'utf8'));
-          if (report.bomFormat !== 'CycloneDX' || !report.sbom) throw new Error('CycloneDX SBOM missing from supply-chain report');
+          if (report.sbom?.bomFormat !== 'CycloneDX' || !report.sbom || report.signatureStatus !== 'verified') {
+            throw new Error('Verified CycloneDX supply-chain evidence is incomplete');
+          }
           writeFileSync('release-evidence/sbom.cdx.json', JSON.stringify(report.sbom, null, 2) + '\n');
           NODE
 
-      - name: Build and publish digest-identified containment image
+      - name: Upload immutable release candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: invock-release-candidate-${{ github.sha }}
+          path: |
+            release-evidence/
+            invock-containment.tar
+          if-no-files-found: error
+          compression-level: 9
+          retention-days: 30
+
+  publish:
+    name: publish and attest approved candidate
+    needs: build-candidate
+    runs-on: ubuntu-latest
+    environment:
+      name: release-provenance
+      url: https://github.com/${{ github.repository }}/attestations
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      packages: write
+    steps:
+      - name: Download exact candidate from this workflow run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: invock-release-candidate-${{ github.sha }}
+          path: release-candidate
+
+      - name: Validate and load candidate
+        shell: bash
+        working-directory: release-candidate
+        run: |
+          set -euo pipefail
+          [[ "$(awk -F= '$1 == "release_commit" { print $2 }' release-evidence/release-ref.txt)" == "$GITHUB_SHA" ]] || { echo "Candidate commit mismatch" >&2; exit 1; }
+          sha256sum --check release-evidence/candidate-image-sha256.txt
+          node -e "const r=JSON.parse(require('fs').readFileSync('release-evidence/supply-chain.json','utf8')); if(r.sbom?.bomFormat!=='CycloneDX'||!r.sbom||r.signatureStatus!=='verified') throw new Error('invalid signed supply-chain evidence')"
+          node -e "JSON.parse(require('fs').readFileSync('release-evidence/sbom.cdx.json','utf8'))"
+          docker load --input invock-containment.tar
+          docker image inspect "invock-containment-candidate:${GITHUB_SHA}" > /dev/null
+
+      - name: Publish exact candidate by registry digest
         id: image
         shell: bash
+        working-directory: release-candidate
         env:
           REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           image_name="ghcr.io/${GITHUB_REPOSITORY,,}"
           image="$image_name:${GITHUB_SHA}"
-          echo "image_name=$image_name" >> "$GITHUB_OUTPUT"
           echo "$REGISTRY_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-          docker build --pull --file docker/containment.Dockerfile --tag "$image" --label "org.opencontainers.image.revision=$GITHUB_SHA" . 2>&1 | tee release-evidence/docker-build.log
-          local_id="$(docker image inspect "$image" --format '{{.Id}}')"
-          [[ "$local_id" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "container image ID is not a sha256 digest" >&2; exit 1; }
-          docker image inspect "$image" > release-evidence/docker-image-inspect.json
+          docker tag "invock-containment-candidate:${GITHUB_SHA}" "$image"
           docker push "$image" 2>&1 | tee release-evidence/docker-push.log
           image_ref="$(docker image inspect "$image" --format '{{index .RepoDigests 0}}')"
-          [[ "$image_ref" == *@sha256:* ]] || { echo "registry digest missing" >&2; exit 1; }
+          [[ "$image_ref" == *@sha256:* ]] || { echo "Registry digest missing" >&2; exit 1; }
           digest="${image_ref##*@}"
-          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "invalid registry digest" >&2; exit 1; }
-          echo "$digest" | tee release-evidence/image-digest.txt
-          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "Invalid registry digest" >&2; exit 1; }
+          printf '%s\n' "$digest" | tee release-evidence/image-digest.txt
           docker buildx imagetools inspect "$image_ref" | tee release-evidence/registry-image-inspect.txt
+          printf 'image_name=%s\ndigest=%s\nimage_ref=%s\n' "$image_name" "$digest" "$image_ref" >> "$GITHUB_OUTPUT"
           cat > release-evidence/reproducibility-manifest.json <<JSON
           {
             "schema": "invock/release-reproducibility/v1",
@@ -104,28 +181,38 @@ jobs:
             "workflow": "$GITHUB_WORKFLOW",
             "runId": "$GITHUB_RUN_ID",
             "image": "$image_ref",
+            "candidateArtifact": "invock-release-candidate-${GITHUB_SHA}",
             "dockerfile": "docker/containment.Dockerfile",
             "lockfile": "pnpm-lock.yaml"
           }
           JSON
-          sha256sum pnpm-lock.yaml docker/containment.Dockerfile > release-evidence/input-sha256sums.txt
+          find release-evidence -type f ! -name final-sha256sums.txt -print0 | sort -z | xargs -0 sha256sum > release-evidence/final-sha256sums.txt
 
-      - name: Upload immutable release evidence
+      - name: Upload final release evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: invock-release-evidence-${{ github.sha }}
-          path: release-evidence/
+          path: release-candidate/release-evidence/
           if-no-files-found: error
           compression-level: 9
+          retention-days: 90
 
       - name: Attest release evidence
         uses: actions/attest-build-provenance@c074443f1aee8d4aeeae555aebba3282517141b2 # v2.2.3
         with:
-          subject-path: release-evidence/**
+          subject-path: release-candidate/release-evidence/**
 
       - name: Attest containment image
-        uses: actions/attest-build-provenance@c074443f1aee8d4aee555aebba3282517141b2 # v2.2.3
+        uses: actions/attest-build-provenance@c074443f1aee8d4aeeae555aebba3282517141b2 # v2.2.3
         with:
           subject-name: ${{ steps.image.outputs.image_name }}
           subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
+
+      - name: Bind CycloneDX SBOM to containment image
+        uses: actions/attest-sbom@bd218ad0dbcb3e146bd073d1d9c6d78e08aa8a0b # v2.4.0
+        with:
+          subject-name: ${{ steps.image.outputs.image_name }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          sbom-path: release-candidate/release-evidence/sbom.cdx.json
           push-to-registry: true
