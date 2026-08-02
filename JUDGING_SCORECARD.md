@@ -3,7 +3,7 @@
 | Category | Target | Evidence | Current assessment |
 |---|---:|---|---|
 | Originality | 10 | Intent/lease/lineage/containment/evidence thesis; prior-art review | Strong product composition; academic novelty NOT PROVEN |
-| Effort | 10 | 291 tests, signed receipts, SQLite, adapters, 18-scenario Arena, containment boundary, docs | Substantial local implementation; full mandate gates incomplete |
+| Effort | 10 | 322 tests, signed receipts, SQLite, adapters, 18-scenario Arena, containment boundary, docs | Substantial local implementation; full mandate gates incomplete |
 | Impact | 10 | CLI, SDKs, API, dashboard, policy forge, evidence export | Clear local developer wedge; framework-wide and buyer validation NOT PROVEN |
 | Project condition | 10 | Typecheck, build, test, local certification | Local slice green; Docker direct runtime, broad accessibility, clean rehearsals, and release audits remain open |
 

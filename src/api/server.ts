@@ -276,6 +276,128 @@ export function startApi(store: InvockStore, options: ApiOptions = {}): Promise<
     if (request.method === "POST" && approve?.[1]) { if (request.headers["idempotency-key"] === undefined || request.headers["content-type"] !== "application/json") { json(response, 400, { error: "idempotency_key_and_json_required" }); return; } const payload = await body(request); const ok = typeof payload.expectedBindingDigest === "string" && store.approve(approve[1], payload.expectedBindingDigest); json(response, ok ? 200 : 409, { approved: ok }); return; }
     const reject = /^\/api\/v1\/approvals\/([^/]+)\/reject$/u.exec(url.pathname);
     if (request.method === "POST" && reject?.[1]) { if (request.headers["idempotency-key"] === undefined || request.headers["content-type"] !== "application/json") { json(response, 400, { error: "idempotency_key_and_json_required" }); return; } const payload = await body(request); const ok = typeof payload.expectedBindingDigest === "string" && store.reject(reject[1], payload.expectedBindingDigest); json(response, ok ? 200 : 409, { rejected: ok }); return; }
+    const pathMod = await import("node:path");
+    const fsMod = await import("node:fs");
+    const privacyDir = process.env.INVOCK_PRIVACY_DIR ?? pathMod.resolve(".invock");
+
+    if (request.method === "GET" && url.pathname === "/api/privacy/legacy/status") {
+      const { loadPrivacyConfig } = await import("../privacy/index.js");
+      const config = loadPrivacyConfig(privacyDir);
+      const onboarding = config.legacy_onboarding;
+      json(response, 200, { status: onboarding?.status ?? "NOT_SCANNED" });
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/privacy/legacy/scans") {
+      const files = fsMod.existsSync(privacyDir) ? fsMod.readdirSync(privacyDir).filter(f => f.startsWith("legacy-scan-") && f.endsWith(".json")) : [];
+      const scans = files.map(file => {
+        try {
+          const data = JSON.parse(fsMod.readFileSync(pathMod.join(privacyDir, file), "utf8"));
+          return {
+            scanId: data.summary.scanId,
+            startedAt: data.summary.startedAt,
+            completedAt: data.summary.completedAt,
+            filesExamined: data.summary.filesExamined,
+            findingsCount: data.summary.findings
+          };
+        } catch { return null; }
+      }).filter(Boolean);
+      json(response, 200, { scans });
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/privacy/legacy/findings/summary") {
+      const { loadPrivacyConfig } = await import("../privacy/index.js");
+      const config = loadPrivacyConfig(privacyDir);
+      const lastScanId = config.legacy_onboarding?.last_scan_id;
+      if (lastScanId && fsMod.existsSync(pathMod.join(privacyDir, `legacy-scan-${lastScanId}.json`))) {
+        try {
+          const scanData = JSON.parse(fsMod.readFileSync(pathMod.join(privacyDir, `legacy-scan-${lastScanId}.json`), "utf8"));
+          const summary = scanData.findings.map((f: any) => ({
+            id: f.id,
+            sourceType: f.sourceType,
+            format: f.format,
+            severity: f.severity,
+            matchCount: f.matchCount,
+            autoDeleteEligible: f.autoDeleteEligible,
+            recommendedActions: f.recommendedActions
+          }));
+          json(response, 200, { findings: summary });
+          return;
+        } catch {}
+      }
+      json(response, 200, { findings: [] });
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/privacy/legacy/plans") {
+      const files = fsMod.existsSync(privacyDir) ? fsMod.readdirSync(privacyDir).filter(f => f.startsWith("remediation-plan-") && f.endsWith(".json")) : [];
+      const plans = files.map(file => {
+        try {
+          const data = JSON.parse(fsMod.readFileSync(pathMod.join(privacyDir, file), "utf8"));
+          return {
+            id: data.id,
+            scanId: data.scanId,
+            createdAt: data.createdAt,
+            selectedDeleteCount: data.selectedDeleteCount,
+            manualActionCount: data.manualActionCount,
+            digest: data.digest
+          };
+        } catch { return null; }
+      }).filter(Boolean);
+      json(response, 200, { plans });
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/privacy/legacy/provider-actions") {
+      const { loadProviderHistoryRecords } = await import("../privacy/legacy/provider-history.js");
+      const records = loadProviderHistoryRecords(privacyDir);
+      const safeRecords = records.map(r => ({
+        providerId: r.providerId,
+        productId: r.productId,
+        state: r.state,
+        evidenceDigest: r.evidenceDigest,
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt
+      }));
+      json(response, 200, { providerActions: safeRecords });
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/privacy/boundary") {
+      const { loadPrivacyConfig } = await import("../privacy/index.js");
+      const config = loadPrivacyConfig(privacyDir);
+      const boundaryId = config.legacy_onboarding?.boundary_id;
+      if (boundaryId && fsMod.existsSync(pathMod.join(privacyDir, `privacy-boundary-${boundaryId}.json`))) {
+        try {
+          const boundary = JSON.parse(fsMod.readFileSync(pathMod.join(privacyDir, `privacy-boundary-${boundaryId}.json`), "utf8"));
+          json(response, 200, boundary);
+          return;
+        } catch {}
+      }
+      json(response, 404, { error: "not_found" });
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/privacy/boundary/verification") {
+      const { loadPrivacyConfig } = await import("../privacy/index.js");
+      const config = loadPrivacyConfig(privacyDir);
+      const boundaryId = config.legacy_onboarding?.boundary_id;
+      if (boundaryId && fsMod.existsSync(pathMod.join(privacyDir, `privacy-boundary-${boundaryId}.json`))) {
+        try {
+          const boundary = JSON.parse(fsMod.readFileSync(pathMod.join(privacyDir, `privacy-boundary-${boundaryId}.json`), "utf8"));
+          const publicKeyPath = pathMod.join(privacyDir, "receipt-ed25519.public.pem");
+          const publicKeyPem = fsMod.existsSync(publicKeyPath) ? fsMod.readFileSync(publicKeyPath, "utf8") : "";
+          const { verifyProtectionBoundary } = await import("../privacy/legacy/boundary.js");
+          const valid = verifyProtectionBoundary(boundary, publicKeyPem);
+          json(response, 200, { boundaryId, valid });
+          return;
+        } catch {}
+      }
+      json(response, 200, { valid: false });
+      return;
+    }
+
     json(response, 404, { error: "not_found" });
   })().catch(() => json(response, 400, { error: "bad_request" })); });
   return new Promise((resolve, reject) => { server.once("error", reject); server.listen(options.port ?? 0, host, () => { const address = server.address(); if (!address || typeof address === "string") return reject(new Error("Unable to bind API")); resolve({ server, token, url: `http://${host}:${address.port}`, close: () => new Promise((done, fail) => server.close(error => error ? fail(error) : done())) }); }); });

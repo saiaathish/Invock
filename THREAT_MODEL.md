@@ -101,7 +101,7 @@ The CI workflow now uses full commit SHAs for its third-party actions. The gener
 | Control | Source evidence | Executed evidence | Status |
 |---|---|---|---|
 | JSON-RPC/frame/body bounds and supported method boundary | `src/gateway/stdio.ts:6-18,57-69`; `src/mcp/protocol.ts:25-47`; `src/mcp/http.ts:9-12,53-72` | `pnpm test` and focused transport tests | PASS for tested cases only |
-| Shared `tools/call` authorization before forwarding | `src/gateway/engine.ts`; stdio; HTTP; API `/api/v1/authorize` | 291/291 full suite; bounded CLI/API probe | PASS for covered routes; dynamic registry provenance, gateway-wide containment, and production deployment remain NOT PROVEN |
+| Shared `tools/call` authorization before forwarding | `src/gateway/engine.ts`; stdio; HTTP; API `/api/v1/authorize` | 322/322 full suite; bounded CLI/API probe | PASS for covered routes; dynamic registry provenance, gateway-wide containment, and production deployment remain NOT PROVEN |
 | Schema and hidden-property rejection | `src/core/normalize.ts:55-91,93-102,220-245`; `src/gateway/engine.ts:35-46` | `test/security.test.ts`, `test/readiness.test.ts` | PASS for static descriptors and tested schema drift |
 | Approval binding, expiry, replay, and atomic state | `src/storage/store.ts:140-179` | `test/security.test.ts`, `test/readiness.test.ts` | PASS for tested approval paths |
 | Authority capsule/lease lifecycle and session binding | `src/authority/capsule.ts`, `src/authority/lease.ts`, `src/authority/evaluate.ts`; gate session check `src/gateway/engine.ts` | authority, gateway, API, and identity tests | PASS for tested known values and explicit unknowns; full property coverage NOT PROVEN |

@@ -21,7 +21,7 @@ Delivered and covered by the mandatory suite:
 - Executable 18-scenario Arena (three repetitions and three execution paths), deterministic judge mode, property/fuzz/chaos suites, and a signed local supply-chain evidence inventory.
 - GitHub-ready license, ignore rules, exact package-manager metadata, Node version, and CI workflow.
 
-Latest verified mandatory suite: **291 tests, 291 passing, 0 failed, 0 skipped**. The local certification command reports only the phases it actually executes; digest-pinned local containment, signed local supply-chain evidence, receipt-key history, detached lineage proofs, and gate-bound containment evidence are implemented locally, while gateway-wide adapter enforcement, independent audits, external provenance/advisories, browser breadth, and broader production gates remain separately scoped.
+Latest verified mandatory suite: **322 tests, 322 passing, 0 failed, 0 skipped**. The local certification command reports only the phases it actually executes; digest-pinned local containment, signed local supply-chain evidence, receipt-key history, detached lineage proofs, and gate-bound containment evidence are implemented locally, while gateway-wide adapter enforcement, independent audits, external provenance/advisories, browser breadth, and broader production gates remain separately scoped.
 
 The authenticated local `/api/v1/authorize` route is wired to the canonical `InvocationGate`. SDK requests carrying an Intent Capsule must also carry a session ID and a validated Capability Lease chain; malformed or incomplete authority fails closed.
 
