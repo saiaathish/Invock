@@ -135,7 +135,7 @@ jobs:
           pnpm claim-consistency -- --test-count "$test_count" --final-verdict NOT_READY 2>&1 | tee release-evidence/claim-consistency.log
           node --import tsx --input-type=module <<'NODE'
           import { readFileSync } from 'node:fs';
-          import { createCycloneDx15Document, validateCycloneDx15, verifySupplyChainSignature } from './src/supplychain.ts';
+          import { createCycloneDx15Document, validateCycloneDx15, verifySupplyChainSignature } from './src/supplychain/index.ts';
           const report = JSON.parse(readFileSync('release-evidence/supply-chain.json', 'utf8'));
           const document = JSON.parse(readFileSync('release-evidence/sbom.cdx.json', 'utf8'));
           if (report.sbom?.bomFormat !== 'CycloneDX' || !report.sbom || report.signatureStatus !== 'verified' || report.advisoryStatus !== 'queried-no-findings' || typeof report.advisoryEvidenceDigest !== 'string' || !verifySupplyChainSignature(report)) {
