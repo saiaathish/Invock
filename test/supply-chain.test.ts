@@ -25,6 +25,7 @@ test("supply-chain inventory is deterministic and evidence-only", () => {
     assert.deepEqual(first.dependencies.map(item => item.name), ["alpha", "beta"]);
     assert.deepEqual(first.resolvedDependencies.map(item => item.name), ["alpha", "beta"]);
     assert.equal(first.sbom.components.length, 3);
+    assert.match(first.sbom.serialNumber, /^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
     assert.equal(first.containerReferences[0]?.digestPinned, true);
     assert.equal(first.containerReferences[1]?.digestPinned, false);
   } finally { rmSync(root, { recursive: true, force: true }); }
