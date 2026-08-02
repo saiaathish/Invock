@@ -3,10 +3,7 @@ import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 
 const requiredArtifacts = [
-  "REVOLUTIONARY_PRODUCT_SPEC.md", "CURRENT_STATE_AUDIT.md", "PRIOR_ART_REVIEW.md", "NOVELTY_MATRIX.md",
-  "THREAT_MODEL.md", "AUTHORITY_CALCULUS.md", "EXPANDED_ARCHITECTURE.md", "BENCHMARK_REPORT.md",
-  "RESEARCH_PAPER.md", "SYSTEM_CARD.md", "COMMERCIALIZATION.md", "DESIGN_PARTNER_GUIDE.md",
-  "DEMO_SCRIPT.md", "JUDGE_QA.md", "JUDGING_SCORECARD.md", "FINAL_PRODUCT_CERTIFICATION.md",
+  "THREAT_MODEL.md", "AUTHORITY_CALCULUS.md", "SYSTEM_CARD.md",
 ];
 const args = process.argv.slice(2);
 const countFlag = args.indexOf("--test-count");

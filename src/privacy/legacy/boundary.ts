@@ -19,6 +19,10 @@ export interface EnforcementStartEvidence {
   reasonCodes: string[];
 }
 
+/**
+ * Resolves the earliest provable timestamp when Invock active enforcement began.
+ * Inspects signed runtime receipts in the SQLite store to extract verified signature evidence.
+ */
 export async function resolveEnforcementStart(
   privacyDir: string,
   publicKeyPem: string
