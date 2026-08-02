@@ -1,0 +1,131 @@
+name: release provenance
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+  packages: write
+
+concurrency:
+  group: invock-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Validate release ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            [[ "$GITHUB_REF_NAME" == "main" ]] || { echo "Manual provenance runs are allowed only from main" >&2; exit 1; }
+            git fetch --no-tags origin main
+            release_commit="$(git rev-parse origin/main)"
+          else
+            [[ "$GITHUB_REF_TYPE" == "tag" ]] || { echo "Release provenance requires a tag push" >&2; exit 1; }
+            [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Release tag must be a protected semantic version such as v0.1.0" >&2; exit 1; }
+            git fetch --no-tags origin main
+            git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "Tagged commit is not an ancestor of origin/main" >&2; exit 1; }
+            package_version="$(node -p "require('./package.json').version")"
+            [[ "$package_version" == "${GITHUB_REF_NAME#v}" ]] || { echo "Tag/package version mismatch: $GITHUB_REF_NAME vs $package_version" >&2; exit 1; }
+            release_commit="$GITHUB_SHA"
+          fi
+          printf 'release_ref=%s\nrelease_commit=%s\n' "$GITHUB_REF_NAME" "$release_commit" | tee release-ref.txt
+
+      - name: Install frozen dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run release checks and generate evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-evidence
+          cp release-ref.txt release-evidence/release-ref.txt
+          pnpm exec playwright install --with-deps chromium 2>&1 | tee release-evidence/playwright-install.log
+          pnpm typecheck 2>&1 | tee release-evidence/typecheck.log
+          pnpm lint 2>&1 | tee release-evidence/lint.log
+          pnpm test 2>&1 | tee release-evidence/test.log
+          pnpm build 2>&1 | tee release-evidence/build.log
+          pnpm supply-chain 2>&1 | tee release-evidence/supply-chain.json
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const report = JSON.parse(readFileSync('release-evidence/supply-chain.json', 'utf8'));
+          if (report.bomFormat !== 'CycloneDX' || !report.sbom) throw new Error('CycloneDX SBOM missing from supply-chain report');
+          writeFileSync('release-evidence/sbom.cdx.json', JSON.stringify(report.sbom, null, 2) + '\n');
+          NODE
+
+      - name: Build and publish digest-identified containment image
+        id: image
+        shell: bash
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          image_name="ghcr.io/${GITHUB_REPOSITORY,,}"
+          image="$image_name:${GITHUB_SHA}"
+          echo "image_name=$image_name" >> "$GITHUB_OUTPUT"
+          echo "$REGISTRY_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker build --pull --file docker/containment.Dockerfile --tag "$image" --label "org.opencontainers.image.revision=$GITHUB_SHA" . 2>&1 | tee release-evidence/docker-build.log
+          local_id="$(docker image inspect "$image" --format '{{.Id}}')"
+          [[ "$local_id" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "container image ID is not a sha256 digest" >&2; exit 1; }
+          docker image inspect "$image" > release-evidence/docker-image-inspect.json
+          docker push "$image" 2>&1 | tee release-evidence/docker-push.log
+          image_ref="$(docker image inspect "$image" --format '{{index .RepoDigests 0}}')"
+          [[ "$image_ref" == *@sha256:* ]] || { echo "registry digest missing" >&2; exit 1; }
+          digest="${image_ref##*@}"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "invalid registry digest" >&2; exit 1; }
+          echo "$digest" | tee release-evidence/image-digest.txt
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          docker buildx imagetools inspect "$image_ref" | tee release-evidence/registry-image-inspect.txt
+          cat > release-evidence/reproducibility-manifest.json <<JSON
+          {
+            "schema": "invock/release-reproducibility/v1",
+            "repository": "$GITHUB_REPOSITORY",
+            "commit": "$GITHUB_SHA",
+            "ref": "$GITHUB_REF",
+            "workflow": "$GITHUB_WORKFLOW",
+            "runId": "$GITHUB_RUN_ID",
+            "image": "$image_ref",
+            "dockerfile": "docker/containment.Dockerfile",
+            "lockfile": "pnpm-lock.yaml"
+          }
+          JSON
+          sha256sum pnpm-lock.yaml docker/containment.Dockerfile > release-evidence/input-sha256sums.txt
+
+      - name: Upload immutable release evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: invock-release-evidence-${{ github.sha }}
+          path: release-evidence/
+          if-no-files-found: error
+          compression-level: 9
+
+      - name: Attest release evidence
+        uses: actions/attest-build-provenance@c074443f1aee8d4aeeae555aebba3282517141b2 # v2.2.3
+        with:
+          subject-path: release-evidence/**
+
+      - name: Attest containment image
+        uses: actions/attest-build-provenance@c074443f1aee8d4aee555aebba3282517141b2 # v2.2.3
+        with:
+          subject-name: ${{ steps.image.outputs.image_name }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true

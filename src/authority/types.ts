@@ -1,4 +1,5 @@
 import type { Capability, Effect } from "../core/types.js";
+import type { AuthorityBinding, HumanActivation } from "./binding.js";
 
 export type CapsuleStatus = "PROPOSED" | "ACTIVE" | "REVOKED" | "EXPIRED";
 
@@ -32,6 +33,10 @@ export interface IntentCapsule {
   expiresAt: string;
   status: CapsuleStatus;
   digest: string;
+  /** Optional binding for the production-shaped identity/policy/registry path. */
+  authorityBinding?: AuthorityBinding;
+  /** Present only after a bound capsule has received human activation evidence. */
+  humanActivation?: HumanActivation;
   revokedAt?: string;
   revocationDigest?: string;
 }
@@ -52,17 +57,21 @@ export interface CapabilityLease {
   issuedAt: string;
   expiresAt: string;
   revocationDigest: string;
+  authorityBindingDigest?: string;
   status: "ACTIVE" | "REVOKED" | "EXPIRED";
   digest: string;
 }
 
 export interface AuthorityRequest {
   tool: string;
+  /** Runtime principal selected by the gateway; never supplied by an untrusted lease caller. */
+  runtimeSubject?: string;
   capabilities: Capability[];
   effects: Effect[];
   resources?: Partial<AuthorityResourceConstraints>;
   dataLabels?: string[];
   bytes?: number;
+  authorityBindingDigest?: string;
 }
 
 export interface AuthorityEvaluation {

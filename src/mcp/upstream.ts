@@ -1,6 +1,6 @@
 import { request as httpRequest, type IncomingMessage, type RequestOptions } from "node:http";
 import { request as httpsRequest } from "node:https";
-import type { JsonRpcMessage, JsonRpcRequest, JsonRpcResponse } from "./protocol.js";
+import { isJsonRpcResponse, type JsonRpcMessage, type JsonRpcResponse } from "./protocol.js";
 
 export interface RedirectPolicy {
   maxRedirects: number;
@@ -34,24 +34,8 @@ const DEFAULT_HEADER_TIMEOUT_MS = 10_000;
 const DEFAULT_BODY_TIMEOUT_MS = 30_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_REDIRECTS = 5;
-
-function isJsonRpcResponse(value: unknown): value is JsonRpcResponse {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
-  const record = value as Record<string, unknown>;
-  if (record.jsonrpc !== "2.0") return false;
-  if (typeof record.id !== "string" && typeof record.id !== "number" && record.id !== null) return false;
-  if (record.result === undefined && record.error === undefined) return false;
-  return true;
-}
-
-function isJsonRpcRequest(value: unknown): value is JsonRpcRequest {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
-  const record = value as Record<string, unknown>;
-  if (record.jsonrpc !== "2.0") return false;
-  if (typeof record.method !== "string") return false;
-  if (record.id !== undefined && typeof record.id !== "string" && typeof record.id !== "number") return false;
-  return true;
-}
+const REDIRECT_SENSITIVE_HEADERS = /^(authorization|cookie|proxy-authorization|mcp-session-id|x-api-key|x-auth-token|x-access-token)$/iu;
+const MAX_SSE_BUFFER_BYTES = 2 * 1024 * 1024;
 
 export class StreamableHttpUpstreamClient {
   private readonly baseUrl: URL;
@@ -111,7 +95,7 @@ export class StreamableHttpUpstreamClient {
     return { protocolVersion: this.protocolVersion, sessionId: this.sessionId };
   }
 
-  async request(message: JsonRpcMessage, opts: { timeoutMs?: number } = {}): Promise<JsonRpcMessage> {
+  async request(message: JsonRpcMessage, opts: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<JsonRpcMessage> {
     if (this.closed) throw new Error("UPSTREAM_CLOSED");
     const id = "id" in message && (typeof message.id === "string" || typeof message.id === "number") ? message.id : undefined;
     const timeoutMs = opts.timeoutMs ?? this.requestTimeoutMs;
@@ -121,6 +105,9 @@ export class StreamableHttpUpstreamClient {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     timer.unref();
+    let callerAborted = false;
+    const onCallerAbort = (): void => { callerAborted = true; controller.abort(); };
+    opts.signal?.addEventListener("abort", onCallerAbort, { once: true });
 
     return new Promise<JsonRpcMessage>((resolve, reject) => {
       const onTimeout = (): void => {
@@ -129,10 +116,10 @@ export class StreamableHttpUpstreamClient {
           if (pending) {
             this.pending.delete(id);
             clearTimeout(pending.timer);
-            pending.reject(new Error("UPSTREAM_REQUEST_TIMEOUT"));
+            pending.reject(new Error(callerAborted ? "UPSTREAM_ABORTED" : "UPSTREAM_REQUEST_TIMEOUT"));
           }
         } else {
-          reject(new Error("UPSTREAM_REQUEST_TIMEOUT"));
+          reject(new Error(callerAborted ? "UPSTREAM_ABORTED" : "UPSTREAM_REQUEST_TIMEOUT"));
         }
       };
       controller.signal.addEventListener("abort", onTimeout, { once: true });
@@ -145,6 +132,7 @@ export class StreamableHttpUpstreamClient {
         .then((response) => {
           if (id === undefined) {
             controller.signal.removeEventListener("abort", onTimeout);
+            opts.signal?.removeEventListener("abort", onCallerAbort);
             clearTimeout(timer);
             resolve(response);
             return;
@@ -155,6 +143,7 @@ export class StreamableHttpUpstreamClient {
               this.pending.delete(id);
               clearTimeout(pending.timer);
               controller.signal.removeEventListener("abort", onTimeout);
+              opts.signal?.removeEventListener("abort", onCallerAbort);
               pending.reject(new Error("UPSTREAM_RESPONSE_ID_MISMATCH"));
             }
             return;
@@ -164,6 +153,7 @@ export class StreamableHttpUpstreamClient {
             this.pending.delete(id);
             clearTimeout(pending.timer);
             controller.signal.removeEventListener("abort", onTimeout);
+            opts.signal?.removeEventListener("abort", onCallerAbort);
             pending.resolve(response);
           }
         })
@@ -174,10 +164,12 @@ export class StreamableHttpUpstreamClient {
               this.pending.delete(id);
               clearTimeout(pending.timer);
               controller.signal.removeEventListener("abort", onTimeout);
+              opts.signal?.removeEventListener("abort", onCallerAbort);
               pending.reject(error instanceof Error ? error : new Error(String(error)));
             }
           } else {
             controller.signal.removeEventListener("abort", onTimeout);
+            opts.signal?.removeEventListener("abort", onCallerAbort);
             clearTimeout(timer);
             reject(error instanceof Error ? error : new Error(String(error)));
           }
@@ -207,6 +199,11 @@ export class StreamableHttpUpstreamClient {
     const body = JSON.stringify(message);
     const response = await this.doRequest("POST", this.baseUrl, headers, body, signal, 0);
 
+    if (response.statusCode !== undefined && (response.statusCode < 200 || response.statusCode >= 300)) {
+      response.resume();
+      throw new Error(`UPSTREAM_HTTP_STATUS_${response.statusCode}`);
+    }
+
     const sessionHeader = response.headers["mcp-session-id"];
     if (typeof sessionHeader === "string" && sessionHeader.length > 0) {
       this.sessionId = sessionHeader;
@@ -232,7 +229,7 @@ export class StreamableHttpUpstreamClient {
     } catch {
       throw new Error("UPSTREAM_INVALID_JSON");
     }
-    if (!isJsonRpcResponse(parsed) && !isJsonRpcRequest(parsed)) {
+    if (!isJsonRpcResponse(parsed)) {
       throw new Error("UPSTREAM_MALFORMED_RESPONSE");
     }
     return parsed;
@@ -243,17 +240,25 @@ export class StreamableHttpUpstreamClient {
       let buffer = "";
       const onData = (chunk: Buffer): void => {
         buffer += chunk.toString("utf8");
+        if (Buffer.byteLength(buffer, "utf8") > MAX_SSE_BUFFER_BYTES) {
+          cleanup();
+          reject(new Error("UPSTREAM_SSE_FRAME_TOO_LARGE"));
+          return;
+        }
         let idx: number;
-        while ((idx = buffer.indexOf("\n\n")) !== -1) {
+        while ((idx = buffer.search(/\r\n\r\n|\n\n|\r\r/u)) !== -1) {
+          const delimiter = buffer.match(/\r\n\r\n|\n\n|\r\r/u)?.[0] ?? "\n\n";
           const frame = buffer.slice(0, idx);
-          buffer = buffer.slice(idx + 2);
-          const eventLine = frame.split("\n").find((line) => line.startsWith("event: "));
-          const dataLine = frame.split("\n").find((line) => line.startsWith("data: "));
-          if (eventLine === "event: message" && dataLine !== undefined) {
-            const data = dataLine.slice(6);
+          buffer = buffer.slice(idx + delimiter.length);
+          const lines = frame.split(/\r\n|\r|\n/u);
+          const eventLine = lines.find((line) => line.startsWith("event:"));
+          const dataLines = lines.filter((line) => line.startsWith("data:"));
+          const eventName = eventLine?.slice(6).replace(/^ /u, "");
+          if (eventName === "message" && dataLines.length > 0) {
+            const data = dataLines.map((line) => line.slice(5).replace(/^ /u, "")).join("\n");
             try {
               const parsed = JSON.parse(data) as unknown;
-              if (isJsonRpcResponse(parsed) || isJsonRpcRequest(parsed)) {
+              if (isJsonRpcResponse(parsed)) {
                 cleanup();
                 resolve(parsed);
                 return;
@@ -429,10 +434,14 @@ export class StreamableHttpUpstreamClient {
       if (nextUrl.hostname !== url.hostname && !this.redirectPolicy.allowCrossHost) {
         throw new Error("UPSTREAM_CROSS_HOST_REDIRECT_DENIED");
       }
+      if (url.protocol === "https:" && nextUrl.protocol !== "https:") throw new Error("UPSTREAM_REDIRECT_PROTOCOL_DOWNGRADE");
       if (this.redirectPolicy.allowedHosts !== undefined && !this.redirectPolicy.allowedHosts.includes(nextUrl.hostname)) {
         throw new Error("UPSTREAM_REDIRECT_HOST_NOT_ALLOWED");
       }
-      return this.doRequest(method, nextUrl, headers, body, signal, redirectCount + 1);
+      const redirectedHeaders = nextUrl.hostname === url.hostname
+        ? headers
+        : Object.fromEntries(Object.entries(headers).filter(([name]) => !REDIRECT_SENSITIVE_HEADERS.test(name)));
+      return this.doRequest(method, nextUrl, redirectedHeaders, body, signal, redirectCount + 1);
     }
 
     signal.removeEventListener("abort", onOuterAbort);

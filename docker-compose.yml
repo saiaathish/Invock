@@ -1,0 +1,18 @@
+# Documentation/configuration shape only.
+# This file is not Docker runtime evidence. The judge reports dockerCompose as
+# not-run unless a separate direct runtime probe succeeds.
+services:
+  invock-judge:
+    image: node:22.18.0-bookworm-slim@sha256:752ea8a2f758c34002a0461bd9f1cee4f9a3c36d48494586f60ffce1fc708e0e
+    working_dir: /workspace
+    volumes:
+      - type: bind
+        source: .
+        target: /workspace
+        read_only: true
+    tmpfs:
+      - /tmp
+      - /workspace/node_modules
+    # The image tag and multi-architecture manifest digest are pinned, but this shape still requires dependency
+    # installation or a prebuilt local image. No runtime proof is implied.
+    command: ["sh", "-lc", "corepack pnpm install --frozen-lockfile --ignore-scripts && corepack pnpm judge --automated"]

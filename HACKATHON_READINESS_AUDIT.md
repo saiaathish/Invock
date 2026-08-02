@@ -1,5 +1,7 @@
 # Invock Hackathon Readiness Audit
 
+> SUPERSEDED HISTORICAL ARTIFACT. This audit predates the current security hardening and is not a current product verdict. Its findings are preserved for traceability; consult `CURRENT_STATE_AUDIT.md` and `FINAL_PRODUCT_CERTIFICATION.md` for the current evidence boundary.
+
 ## 1. Final Verdict
 
 **NOT READY**

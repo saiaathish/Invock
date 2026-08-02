@@ -1,11 +1,13 @@
 # Final Hackathon Certification Report: Invock
 
+> SUPERSEDED HISTORICAL ARTIFACT. The PASS/READY text below describes an earlier narrower run and must not be used as the current product verdict. Current certification is intentionally scoped and remains NOT READY until the mandate's remaining gates are evidenced.
+
 ```text
 ===============================================================================
                      INVOCK FINAL HACKATHON CERTIFICATION
 ===============================================================================
-VERDICT: PASS
-READINESS: READY FOR SUBMISSION
+VERDICT: SUPERSEDED HISTORICAL RUN
+READINESS: NOT A CURRENT CLAIM
 DATE: 2026-08-01
 ===============================================================================
 ```
@@ -25,7 +27,7 @@ DATE: 2026-08-01
 ## 2. Test Suite & Harness Execution Summary
 
 - **TypeScript Typecheck (`pnpm typecheck`)**: PASS (0 errors)
-- **Unit, Transport, Security, & API Tests (`pnpm test`)**: PASS (116 passed, 0 failed, 0 skipped)
+- **Historical Unit, Transport, Security, & API Tests (`pnpm test`)**: PASS (116 passed, 0 failed, 0 skipped at that time)
 - **Production Build (`pnpm build`)**: PASS
 - **Deterministic Certification Harness (`pnpm certify`)**: PASS
 - **Automated E2E Demo Harness (`pnpm demo:certify`)**: PASS

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createServer, type Server } from "node:http";
+import { createServer, request as httpRequest, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { Writable } from "node:stream";
 import type { ServerResponse } from "node:http";
@@ -28,7 +28,7 @@ rules:
     when: {}
 `));
   const store = new InvockStore(join(dir, "gateway.sqlite"));
-  const gate = new InvocationGate(policy, new StaticDescriptorRegistry({}), store, { cwd: dir, projectRoot: realpathSync(dir), organizationDomains: [], sessionId: "sse", principal: { principalId: "test", clientId: "test", scopes: [] } });
+  const gate = new InvocationGate(policy, new StaticDescriptorRegistry({}), store, { cwd: dir, projectRoot: realpathSync(dir), organizationDomains: [], sessionId: "sse", principal: { principalId: "test", clientId: "test", scopes: [] } }, { allowUnboundForTests: true });
   return { dir, store, gate, close: () => { store.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
 
@@ -45,6 +45,33 @@ function listen(server: Server): Promise<number> {
 function closeServer(server: Server): Promise<void> {
   return new Promise((resolve) => {
     server.close(() => resolve());
+  });
+}
+
+function postOnFreshConnection(url: string, token: string, body: string): Promise<{ status: number; body: string }> {
+  const parsed = new URL(url);
+  return new Promise((resolve, reject) => {
+    const request = httpRequest({
+      hostname: parsed.hostname,
+      port: parsed.port,
+      path: `${parsed.pathname}${parsed.search}`,
+      method: "POST",
+      agent: false,
+      headers: {
+        authorization: `Bearer ${token}`,
+        host: parsed.host,
+        "content-type": "application/json",
+        "content-length": Buffer.byteLength(body),
+        connection: "close",
+      },
+    }, response => {
+      const chunks: Buffer[] = [];
+      response.on("data", chunk => chunks.push(Buffer.from(chunk)));
+      response.on("end", () => resolve({ status: response.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf8") }));
+      response.on("error", reject);
+    });
+    request.on("error", reject);
+    request.end(body);
   });
 }
 
@@ -209,6 +236,36 @@ test("POST with session id when SSE disabled still works via direct response", a
   }
 });
 
+test("HTTP request ids are scoped per client connection", async () => {
+  const fixture = fixtureGate();
+  let release!: () => void;
+  let started!: () => void;
+  const startedPromise = new Promise<void>(resolve => { started = resolve; });
+  const releasePromise = new Promise<void>(resolve => { release = resolve; });
+  const http = await startStreamableHttpGateway(fixture.gate, {
+    token: "gateway-token",
+    forward: async message => {
+      started();
+      await releasePromise;
+      return { jsonrpc: "2.0", id: "id" in message ? message.id : null, result: { ok: true } };
+    },
+  });
+  try {
+    const body = JSON.stringify({ jsonrpc: "2.0", id: "same-id", method: "ping" });
+    const first = postOnFreshConnection(http.url, http.token, body);
+    await startedPromise;
+    const second = postOnFreshConnection(http.url, http.token, body);
+    await new Promise(resolve => setTimeout(resolve, 50));
+    release();
+    const [firstResponse, secondResponse] = await Promise.all([first, second]);
+    assert.equal(firstResponse.status, 200);
+    assert.equal(secondResponse.status, 200);
+  } finally {
+    await http.close();
+    fixture.close();
+  }
+});
+
 test("GET /mcp when SSE disabled returns 405", async () => {
   const fixture = fixtureGate();
   const http = await startStreamableHttpGateway(fixture.gate, {
@@ -282,6 +339,61 @@ test("upstream client: id mismatch rejection", async () => {
   } finally {
     client.close();
     await closeServer(mock);
+  }
+});
+
+test("upstream client parses CRLF and multiline SSE data frames", async () => {
+  const mock = createServer((req, res) => {
+    req.resume();
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end('event: message\r\ndata: {"jsonrpc":"2.0",\r\ndata: "id":1,"result":{"ok":true}}\r\n\r\n');
+  });
+  const port = await listen(mock);
+  const client = new StreamableHttpUpstreamClient({ url: `http://127.0.0.1:${port}/mcp`, requestTimeoutMs: 2_000 });
+  try {
+    const response = await client.request({ jsonrpc: "2.0", id: 1, method: "ping" });
+    assert.ok("id" in response && response.id === 1);
+    assert.deepEqual("result" in response ? response.result : undefined, { ok: true });
+  } finally {
+    client.close();
+    await closeServer(mock);
+  }
+});
+
+test("upstream client rejects a JSON-RPC request disguised as a response", async () => {
+  const mock = createServer((req, res) => {
+    req.resume();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "unexpected" } }));
+  });
+  const port = await listen(mock);
+  const client = new StreamableHttpUpstreamClient({ url: `http://127.0.0.1:${port}/mcp`, requestTimeoutMs: 2_000 });
+  try {
+    await assert.rejects(client.request({ jsonrpc: "2.0", id: 1, method: "ping" }), /UPSTREAM_MALFORMED_RESPONSE/u);
+  } finally {
+    client.close();
+    await closeServer(mock);
+  }
+});
+
+test("HTTP gateway rejects a request-shaped upstream control response", async () => {
+  const fixture = fixtureGate();
+  const http = await startStreamableHttpGateway(fixture.gate, {
+    token: "gateway-token",
+    forward: async message => ({ jsonrpc: "2.0", id: "id" in message ? message.id : null, method: "tools/list", params: {} } as never),
+  });
+  try {
+    const response = await fetch(http.url, {
+      method: "POST",
+      headers: { authorization: "Bearer gateway-token", host: new URL(http.url).host, "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 8, method: "ping" }),
+    });
+    assert.equal(response.status, 502);
+    const body = await response.json() as JsonRpcResponse;
+    assert.equal(body.error?.message, "Upstream gateway failure");
+  } finally {
+    await http.close();
+    fixture.close();
   }
 });
 
@@ -372,6 +484,44 @@ test("upstream client: redirect policy cross-host denied", async () => {
   }
 });
 
+test("upstream client strips credentials across an explicitly allowed cross-host redirect", async () => {
+  let forwardedAuthorization: string | undefined;
+  let forwardedCookie: string | undefined;
+  let forwardedSession: string | undefined;
+  const target = createServer((req, res) => {
+    forwardedAuthorization = req.headers.authorization;
+    forwardedCookie = req.headers.cookie;
+    forwardedSession = req.headers["mcp-session-id"] as string | undefined;
+    req.resume();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { ok: true } }));
+  });
+  const redirector = createServer((req, res) => {
+    req.resume();
+    res.writeHead(302, { location: `http://127.0.0.1:${targetPort}/mcp` });
+    res.end();
+  });
+  const targetPort = await listen(target);
+  const redirectorPort = await listen(redirector);
+  const client = new StreamableHttpUpstreamClient({
+    url: `http://localhost:${redirectorPort}/mcp`,
+    headers: { authorization: "Bearer secret", cookie: "session=secret", "mcp-session-id": "upstream-secret" },
+    redirectPolicy: { maxRedirects: 5, allowCrossHost: true, allowedHosts: ["127.0.0.1"] },
+    requestTimeoutMs: 2_000,
+  });
+  try {
+    const response = await client.request({ jsonrpc: "2.0", id: 1, method: "ping" });
+    assert.equal("id" in response && response.id, 1);
+    assert.equal(forwardedAuthorization, undefined);
+    assert.equal(forwardedCookie, undefined);
+    assert.equal(forwardedSession, undefined);
+  } finally {
+    client.close();
+    await closeServer(redirector);
+    await closeServer(target);
+  }
+});
+
 test("upstream client: session terminated clears session id", async () => {
   const sessions: string[] = [];
   const mock = createServer((req, res) => {
@@ -436,6 +586,25 @@ test("hard timeouts: no leaked timers", async () => {
   client.close();
   await requestPromise;
   await closeServer(mock);
+});
+
+test("SSE heartbeat obeys the bounded queue and closes a stalled session", () => {
+  const stream = new Writable({
+    highWaterMark: 1,
+    write(_chunk, _enc, _callback) {
+      // Keep the stream backpressured so heartbeat frames remain queued.
+    },
+  }) as unknown as ServerResponse;
+  const manager = new SseSessionManager({ maxQueueLength: 1, heartbeatMs: 60_000, idleTimeoutMs: 60_000 });
+  const session = manager.createSession(stream, "bounded-heartbeat");
+
+  manager.heartbeat(session.id);
+  manager.heartbeat(session.id);
+  manager.heartbeat(session.id);
+
+  assert.equal(manager.size, 0);
+  assert.equal(session.closed, true);
+  manager.closeAll();
 });
 
 

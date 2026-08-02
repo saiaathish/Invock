@@ -17,7 +17,7 @@ export interface InvocationPolicy {
   apiVersion: "invock.dev/v1";
   kind: "InvocationPolicy";
   metadata: { name: string; description?: string };
-  defaults: { decision: Verdict; unknownCapability?: Verdict; unknownEffect?: Verdict; unresolvedPath?: Verdict; taintToExternalSink?: Verdict };
+  defaults: { decision: Verdict; unknownCapability: Verdict; unknownEffect: Verdict; unresolvedPath?: Verdict; taintToExternalSink?: Verdict };
   variables?: Record<string, string | string[]>;
   rules: PolicyRule[];
 }
@@ -93,7 +93,7 @@ export function validatePolicy(input: unknown): InvocationPolicy {
   });
   return {
     apiVersion: "invock.dev/v1", kind: "InvocationPolicy", metadata: { name: metadata.name, ...(typeof metadata.description === "string" ? { description: metadata.description } : {}) },
-    defaults: { decision: verdict(defaultsValue.decision, "defaults.decision"), ...(defaultsValue.unknownCapability ? { unknownCapability: verdict(defaultsValue.unknownCapability, "defaults.unknownCapability") } : {}), ...(defaultsValue.unknownEffect ? { unknownEffect: verdict(defaultsValue.unknownEffect, "defaults.unknownEffect") } : {}), ...(defaultsValue.unresolvedPath ? { unresolvedPath: verdict(defaultsValue.unresolvedPath, "defaults.unresolvedPath") } : {}), ...(defaultsValue.taintToExternalSink ? { taintToExternalSink: verdict(defaultsValue.taintToExternalSink, "defaults.taintToExternalSink") } : {}) },
+    defaults: { decision: verdict(defaultsValue.decision, "defaults.decision"), unknownCapability: defaultsValue.unknownCapability === undefined ? "BLOCK" : verdict(defaultsValue.unknownCapability, "defaults.unknownCapability"), unknownEffect: defaultsValue.unknownEffect === undefined ? "BLOCK" : verdict(defaultsValue.unknownEffect, "defaults.unknownEffect"), ...(defaultsValue.unresolvedPath ? { unresolvedPath: verdict(defaultsValue.unresolvedPath, "defaults.unresolvedPath") } : {}), ...(defaultsValue.taintToExternalSink ? { taintToExternalSink: verdict(defaultsValue.taintToExternalSink, "defaults.taintToExternalSink") } : {}) },
     ...(Object.keys(variables).length ? { variables: variables as Record<string, string | string[]> } : {}), rules,
   };
 }

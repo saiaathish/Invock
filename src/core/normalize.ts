@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { lstat, realpath } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,6 +12,29 @@ export interface NormalizationDescriptor {
   declaredEffects?: Effect[];
   declaredLabels?: DataLabel[];
   inputSchema?: unknown;
+}
+
+const FIELD_KINDS = new Set<FieldKind>(["path", "url", "command", "command-argv", "recipient", "data"]);
+const CAPABILITIES = new Set<Capability>(["fs.read", "fs.write", "fs.delete", "net.read", "net.send", "process.execute", "process.shell", "message.send", "secret.read"]);
+const EFFECTS = new Set<Effect>(["data.observe", "data.modify", "data.delete", "external.read", "external.disclosure", "external.communication", "process.spawn", "command.interpretation", "persistent.change", "irreversible.action"]);
+const DATA_LABELS = new Set<DataLabel>(["public", "internal", "secret", "credential", "private_key", "personal", "financial", "health", "source_code", "regulated", "unknown", "untrusted_content"]);
+
+/** Validate the security metadata before any resource normalization occurs. */
+function assertDescriptorSafe(descriptor: NormalizationDescriptor): void {
+  if (!Array.isArray(descriptor.fields)) throw new Error("UNKNOWN_NORMALIZER_FIELDS");
+  for (const field of descriptor.fields) {
+    if (field === null || typeof field !== "object" || typeof field.pointer !== "string" || !field.pointer.startsWith("/") || !FIELD_KINDS.has(field.type)) {
+      throw new Error("UNKNOWN_NORMALIZER_FIELD_TYPE");
+    }
+    if (field.methodPointer !== undefined && (typeof field.methodPointer !== "string" || !field.methodPointer.startsWith("/"))) throw new Error("INVALID_NORMALIZER_METHOD_POINTER");
+    if (field.type === "path" && field.access !== undefined && !["read", "write", "delete"].includes(field.access)) throw new Error("INVALID_NORMALIZER_ACCESS");
+  }
+  for (const capability of descriptor.declaredCapabilities ?? []) if (!CAPABILITIES.has(capability)) throw new Error("UNKNOWN_NORMALIZER_CAPABILITY");
+  for (const effect of descriptor.declaredEffects ?? []) if (!EFFECTS.has(effect)) throw new Error("UNKNOWN_NORMALIZER_EFFECT");
+  for (const label of descriptor.declaredLabels ?? []) if (!DATA_LABELS.has(label)) throw new Error("UNKNOWN_NORMALIZER_LABEL");
+  // A no-argument tool must declare its authority explicitly. Empty metadata is
+  // not a harmless default: it would make an unknown side effect look benign.
+  if (descriptor.fields.length === 0 && !(descriptor.declaredCapabilities?.length || descriptor.declaredEffects?.length)) throw new Error("UNKNOWN_NORMALIZER_AUTHORITY");
 }
 
 export interface NormalizationContext {
@@ -130,7 +154,28 @@ async function nearestRealAncestor(absolute: string): Promise<{ real?: string; a
 
 function labelsForPath(candidate: string, context: NormalizationContext): DataLabel[] {
   const protectedPatterns = context.protectedPathPatterns ?? [DEFAULT_PROTECTED_PATH];
-  return protectedPatterns.some(pattern => pattern.test(candidate)) ? ["secret", "credential"] : [];
+  const lower = candidate.toLowerCase();
+  const labels: DataLabel[] = [];
+  if (protectedPatterns.some(pattern => pattern.test(candidate))) labels.push("secret", "credential");
+  if (/(?:private[-_]?key|id_(?:rsa|ed25519)|\.pem$|\.p12$|\.pfx$)/iu.test(candidate)) labels.push("private_key");
+  if (/(?:personal|profile|contact|address|phone|ssn|social[-_]?security|identity)/iu.test(lower)) labels.push("personal");
+  if (/(?:financial|finance|bank|billing|payment|invoice|tax|salary|payroll|credit[-_]?card)/iu.test(lower)) labels.push("financial", "regulated");
+  if (/(?:health|medical|patient|diagnos|prescription|clinic|therapy)/iu.test(lower)) labels.push("health", "regulated");
+  if (/(?:regulated|compliance|hipaa|gdpr|pci[-_]?dss|sox)/iu.test(lower)) labels.push("regulated");
+  if (/(?:upload|download|attachment|untrusted|external[-_]?content|inbox)/iu.test(lower)) labels.push("untrusted_content");
+  try {
+    const configuredRoot = path.resolve(context.projectRoot);
+    const root = (() => { try { return realpathSync(configuredRoot); } catch { return configuredRoot; } })();
+    const relativePath = path.relative(root, candidate);
+    const insideProject = relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
+    if (insideProject) {
+      labels.push("internal");
+      if (/\.(?:c|cc|cpp|cs|go|java|js|jsx|mjs|py|rb|rs|sh|sql|swift|ts|tsx|vue)$/iu.test(lower)) labels.push("source_code");
+    }
+  } catch {
+    labels.push("unknown");
+  }
+  return stableUnique(labels.length > 0 ? labels : ["unknown"]);
 }
 
 export async function normalizePath(raw: string, pointer: string, access: "read" | "write" | "delete", context: NormalizationContext): Promise<PathResource> {
@@ -218,6 +263,7 @@ function infer(resources: Resource[], descriptor: NormalizationDescriptor): { ca
 }
 
 export async function normalizeInvocation(request: ToolCallRequest, descriptor: NormalizationDescriptor, context: NormalizationContext): Promise<ActionEnvelope> {
+  assertDescriptorSafe(descriptor);
   const argumentsValue = request.params.arguments ?? {};
   if (!isRecord(argumentsValue)) throw new Error("arguments must be an object");
   if (descriptor.inputSchema !== undefined) validateSchema(argumentsValue, descriptor.inputSchema, "#/arguments");

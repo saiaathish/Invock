@@ -1,6 +1,8 @@
 # Final read-only audit evidence
 
-Five independent Luna subagent audits completed on 2026-08-01. No audit agent edited the worktree.
+> HISTORICAL/SCOPED ARTIFACT. Five audit scopes are recorded here, but this file is not current independent release evidence and does not authorize a READY claim.
+
+No audit agent edited the worktree.
 
 | Scope | Result | Material limitation |
 |---|---|---|
@@ -10,8 +12,8 @@ Five independent Luna subagent audits completed on 2026-08-01. No audit agent ed
 | Forge, Guard, Arena, mutation adequacy | FAIL | Arena toggles a scenario boolean rather than exercising the real authorization path; no measured mutation run. |
 | Whole-repository release audit | FAIL | INV-41..INV-85, mutation adequacy, truthful release docs, and READY eligibility were not proven. |
 
-The five-agent audit gate is complete as an audit activity. Its earlier findings were addressed by subsequent implementation and expanded certification; see the follow-up evidence below.
+The recorded audit activity is complete as an audit activity. Some findings were addressed by subsequent implementation; the current handoff still keeps unresolved gates open.
 
 ## Follow-up evidence
 
-After the audits, `pnpm arena` was updated and rerun against a real local `InvocationGate`, and the Docker containment probe was enabled once Docker Desktop became available. The expanded certification subsequently passed all listed gates.
+After the audits, `pnpm arena` was updated and rerun against a real local `InvocationGate`. Current `pnpm test`, `pnpm certify`, and the executed phases of `node --import tsx scripts/final-certify.ts` pass; `pnpm docker-containment-test` now exercises and passes both direct Docker flags and the product `runContained` path with a temporary bind mount. The aggregate containment gate remains `NOT_PROVEN` because macOS `noNewPrivileges`, host-path behavior, and the broader mandate gates remain open.
