@@ -59,6 +59,7 @@ jobs:
           set -euo pipefail
           mkdir -p release-evidence
           cp release-ref.txt release-evidence/release-ref.txt
+          pnpm exec playwright install --with-deps chromium 2>&1 | tee release-evidence/playwright-install.log
           pnpm typecheck 2>&1 | tee release-evidence/typecheck.log
           pnpm lint 2>&1 | tee release-evidence/lint.log
           pnpm test 2>&1 | tee release-evidence/test.log
