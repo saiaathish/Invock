@@ -130,6 +130,7 @@ test("Docker profile includes every secure-default invariant", () => {
   assert.ok(args.some(value => value.startsWith("type=bind,src=") && value.endsWith(",dst=/fixture,readonly")));
   assert.ok(args.includes("--tmpfs"));
   assert.ok(args.includes("--pull=never"));
+  assert.equal(args.at(-3), `sha256:${"a".repeat(64)}`);
   assert.equal(args.at(-2), "/fixture/emit.js");
 });
 

@@ -60,8 +60,12 @@ output-limit violations terminate the process group; cleanup is performed in a
 
 `docker/containment.Dockerfile` is a local fixture derivation used by the
 repository probe. Its official Node base is a development build input; the
-runner itself rejects every profile image that lacks a full digest. The runner
-also uses `--pull=never`, so a profile never fetches an image at execution time.
+runner itself rejects every profile image that lacks a full digest. It executes
+the verified local image ID directly rather than reconstructing an
+`image@digest` reference, because Docker engines report locally built image IDs
+as config digests while registry manifests use a different digest namespace.
+The runner also uses `--pull=never`, so a profile never fetches an image at
+execution time.
 Build the probe with its base available in the local Docker cache, then run:
 
 ```text

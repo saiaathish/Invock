@@ -287,8 +287,8 @@ async function dockerAvailable(): Promise<boolean> {
   return await commandAvailable("docker", ["version", "--format", "{{.Server.Version}}"]);
 }
 
-async function dockerImageAvailable(image: string): Promise<boolean> {
-  return await commandAvailable("docker", ["image", "inspect", image]);
+async function dockerImageAvailable(imageDigest: string): Promise<boolean> {
+  return await commandAvailable("docker", ["image", "inspect", imageDigest]);
 }
 
 /** Build the complete Docker invocation. The fixture is the only host mount. */
@@ -306,7 +306,7 @@ export function buildDockerRunArgs(profile: ContainmentProfile, fixtureRoot: str
     "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=16m", "--workdir", "/fixture",
     "--name", containerName,
     ...Object.entries(env).flatMap(([key, value]) => ["--env", `${key}=${value}`]),
-    `${profile.image}@${profile.imageDigest}`,
+    profile.imageDigest,
     "/fixture/" + command,
     ...argv,
   ];
@@ -397,8 +397,7 @@ function processEnvironment(env: Record<string, string>): Record<string, string>
 }
 
 async function runDocker(request: CanonicalRequest, enforcement: EnforcementCapabilities, started: number): Promise<ContainmentResult> {
-  const image = `${request.profile.image}@${request.profile.imageDigest}`;
-  if (!(await dockerImageAvailable(image))) return emptyResult("unsupported", started, ["DOCKER_IMAGE_UNAVAILABLE"], { ...enforcement, sandbox: "unavailable", network: "unknown", readOnlyRoot: false, nonRoot: false, noNewPrivileges: false });
+  if (!(await dockerImageAvailable(request.profile.imageDigest!))) return emptyResult("unsupported", started, ["DOCKER_IMAGE_UNAVAILABLE"], { ...enforcement, sandbox: "unavailable", network: "unknown", readOnlyRoot: false, nonRoot: false, noNewPrivileges: false });
   const containerName = `invock-containment-${process.pid}-${Date.now()}-${containerSequence++}`;
   const child = spawn("docker", buildDockerRunArgs(request.profile, request.root, request.command, request.args, request.env, containerName), {
     cwd: request.root, shell: false, detached: true, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
