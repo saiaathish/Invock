@@ -1,55 +1,248 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parsePolicyYaml, compilePolicy } from "./core/policy.js";
-import { InvocationGate, StaticDescriptorRegistry } from "./gateway/engine.js";
+import { InvocationGate, StaticDescriptorRegistry, type DescriptorRegistry } from "./gateway/engine.js";
 import { runStdioProxy } from "./gateway/stdio.js";
 import { InvockStore } from "./storage/store.js";
 import { startApi } from "./api/server.js";
-import { forgePolicy } from "./forge/index.js";
+import { forgePolicy, diffPolicies, activateDraft, type PolicyDraft, type PolicyObservation } from "./forge/index.js";
 import { inspectWorkflow } from "./guard/index.js";
 import { runContained } from "./containment/index.js";
+import { certifyContainment } from "./containment/certification.js";
+import { persistContainmentRun, readContainmentRun, type UnsignedContainmentRunRecord } from "./containment/lifecycle.js";
+import type { ContainmentProfile } from "./containment/types.js";
+import { LocalControlPlane } from "./control/index.js";
+import { buildEvidenceBundle, renderEvidenceBundle, type EvidenceFormat } from "./evidence/index.js";
+import { digestJson, newId } from "./core/canonical.js";
+import type { ToolCallRequest } from "./core/types.js";
+import type { ApiAuthorizeInput, ApiRuntimeResolution } from "./api/server.js";
+import { assertCapsule } from "./authority/capsule.js";
+import { assertLease } from "./authority/lease.js";
+import type { AuthorityBinding } from "./authority/binding.js";
+import type { CapabilityLease, IntentCapsule } from "./authority/types.js";
+import { scanSupplyChain } from "./supplychain/index.js";
+import { PersistentToolRegistry } from "./registry/registry.js";
 
 const root = process.cwd();
-function usage(): never { console.error(`Invock — deterministic MCP invocation reference monitor
+const unsupportedIntegrations = ["enterprise-cloud-control-plane", "SSO/SCIM", "remote-evidence-anchoring"];
+
+function help(): void {
+  console.log(`Invock — deterministic local-first MCP invocation reference monitor
 
 Usage:
+  invock --help
+  invock init [--state <path>]
+  invock scan [--state <path>]
+  invock supply-chain scan [--root <path>]
   invock policy validate <file>
+  invock policy learn [--from-demo] [<observations-json>]
+  invock policy diff <from-json> <to-json>
+  invock policy simulate <policy-json> [<observations-json>]
+  invock policy activate <draft-json> --approved-by <name> --approval-id <id> --statement <text> [--output <path>]
+  invock policy rollback <policy-id>
   invock doctor [--database <path>] [--key-directory <path>]
   invock receipts verify [--database <path>] [--key-directory <path>]
-  invock serve [--database <path>] [--key-directory <path>]
-  invock serve --stdio [--database <path>] [--key-directory <path>] <command> [-- <args...>]
+  invock receipts rotate-key [--database <path>] [--key-directory <path>]
+  invock receipts export --format json|ndjson|markdown [--session-id <id>] [--database <path>] [--key-directory <path>]
+  invock evidence bundle [<session-id>] [--database <path>] [--key-directory <path>] [--format json|ndjson|markdown]
+  invock start [--database <path>] [--key-directory <path>]
+  invock serve [--strict-authority] [--database <path>] [--key-directory <path>]
+  invock serve --stdio [--strict-authority] [--database <path>] [--key-directory <path>] <command> [-- <args...>]
+  invock scan
+  invock judge
   invock demo safe|attack
   invock forge [observation-json]
   invock guard <workflow-file>
   invock contain <fixture-root> <command> [-- <args...>]
-`); process.exit(64); }
-function policy(file = resolve(root, "policies/default.yaml")) { return compilePolicy(parsePolicyYaml(readFileSync(file, "utf8"))); }
-function option(values: string[], name: string): string | undefined { const index = values.indexOf(name); if (index < 0) return undefined; const value = values[index + 1]; if (!value) usage(); values.splice(index, 2); return resolve(root, value); }
-function runtime(values: string[]) { const database = option(values, "--database") ?? process.env.INVOCK_DATABASE_PATH ?? resolve(root, ".invock/invock.sqlite"); const keyDirectory = option(values, "--key-directory") ?? process.env.INVOCK_KEY_DIRECTORY; return { database, ...(keyDirectory ? { keyDirectory: resolve(root, keyDirectory) } : {}) }; }
-function gate(store: InvockStore) {
-  return new InvocationGate(policy(), new StaticDescriptorRegistry({
+  invock run --sandbox <server-config.json>
+  invock containment certify
+  invock containment inspect <run-id> [--directory <path>]
+
+Local boundary: JSON state, SQLite receipts, and loopback API only. Enterprise/cloud integrations are reported as unsupported.`);
+}
+
+function usage(): number { console.error("Run `invock --help` for usage."); return 64; }
+function readJson<T>(file: string): T { return JSON.parse(readFileSync(resolve(root, file), "utf8")) as T; }
+function takeOption(values: string[], name: string): string | undefined {
+  const index = values.indexOf(name);
+  if (index < 0) return undefined;
+  const value = values[index + 1];
+  if (!value || value.startsWith("--")) throw new Error(`${name} requires a value`);
+  values.splice(index, 2);
+  return resolve(root, value);
+}
+function takeTextOption(values: string[], name: string): string | undefined {
+  const index = values.indexOf(name);
+  if (index < 0) return undefined;
+  const value = values[index + 1];
+  if (!value || value.startsWith("--")) throw new Error(`${name} requires a value`);
+  values.splice(index, 2);
+  return value;
+}
+function runtime(values: string[]): { database: string; keyDirectory?: string } {
+  const database = takeOption(values, "--database") ?? process.env.INVOCK_DATABASE_PATH ?? resolve(root, ".invock/invock.sqlite");
+  const keyDirectory = takeOption(values, "--key-directory") ?? process.env.INVOCK_KEY_DIRECTORY;
+  return keyDirectory ? { database, keyDirectory } : { database };
+}
+function statePath(values: string[]): string { return takeOption(values, "--state") ?? process.env.INVOCK_CONTROL_PLANE_PATH ?? resolve(root, ".invock/control-plane.json"); }
+function formatOption(values: string[], defaultValue: EvidenceFormat = "json"): EvidenceFormat {
+  const value = takeTextOption(values, "--format") ?? defaultValue;
+  if (value !== "json" && value !== "ndjson" && value !== "markdown") throw new Error("--format must be json, ndjson, or markdown");
+  return value;
+}
+function staticDescriptors(): DescriptorRegistry {
+  return new StaticDescriptorRegistry({
     read_file: { fields: [{ pointer: "/path", type: "path", access: "read" }] },
     fetch_url: { fields: [{ pointer: "/url", type: "url", methodPointer: "/method" }, { pointer: "/body", type: "data" }] },
     send_email: { fields: [{ pointer: "/to", type: "recipient" }, { pointer: "/body", type: "data" }] },
     run_command: { fields: [{ pointer: "/command", type: "command" }] },
-  }), store, { cwd: root, projectRoot: root, organizationDomains: ["example.com"], sessionId: "stdio-local", principal: { principalId: "local-user", clientId: "invock-cli", scopes: ["*"] } });
+  });
 }
-async function demo(attack: boolean): Promise<void> {
-  const store = new InvockStore(":memory:"); const monitor = gate(store);
-  const request = attack ? { jsonrpc: "2.0" as const, id: 1, method: "tools/call" as const, params: { name: "read_file", arguments: { path: ".env" } } } : { jsonrpc: "2.0" as const, id: 1, method: "tools/call" as const, params: { name: "read_file", arguments: { path: "/workspace/README.md" } } };
-  const outcome = await monitor.intercept(request);
-  console.log(JSON.stringify(outcome.kind === "respond" ? outcome.response : { decision: outcome.decision.verdict, message: "Would forward to upstream server" }, null, 2));
-  store.close();
+function gate(store: InvockStore, descriptors: DescriptorRegistry = staticDescriptors(), options: { serverId?: string } = {}) {
+  return new InvocationGate(compilePolicy(parsePolicyYaml(readFileSync(resolve(root, "policies/default.yaml"), "utf8"))), descriptors, store, { cwd: root, projectRoot: root, organizationDomains: ["example.com"], sessionId: "stdio-local", ...(options.serverId ? { serverId: options.serverId } : {}), principal: { principalId: "local-user", clientId: "invock-cli", scopes: ["*"] } }, { requireAuthority: true, requireIdentity: true });
 }
 
-const [command, subcommand, ...rest] = process.argv.slice(2);
-if (command === "policy" && subcommand === "validate" && rest[0]) { const compiled = policy(resolve(root, rest[0])); console.log(JSON.stringify({ valid: true, policyVersionId: compiled.policyVersionId, policyDigest: compiled.policyDigest }, null, 2)); }
-else if (command === "doctor") { const values = [subcommand, ...rest].filter((item): item is string => item !== undefined); const config = runtime(values); const store = new InvockStore(config.database, config); console.log(JSON.stringify({ ready: store.isReady(), sqlite: "3.51.3+ required", receiptChain: store.verifyChain() ? "valid" : "invalid", instanceId: store.instanceId, database: config.database, keyDirectory: store.keyDirectory }, null, 2)); store.close(); }
-else if (command === "receipts" && subcommand === "verify") { const values = [...rest]; const config = runtime(values); const store = new InvockStore(config.database, config); const valid = store.verifyChain(); console.log(JSON.stringify({ valid, database: config.database, keyDirectory: store.keyDirectory, chain: store.receiptChainStatus() }, null, 2)); store.close(); if (!valid) process.exitCode = 1; }
-else if (command === "serve" && subcommand === "--stdio") { const values = [...rest]; const config = runtime(values); const separator = values.indexOf("--"); const executable = separator >= 0 ? values.slice(0, separator)[0] : values[0]; if (!executable) usage(); const args = separator >= 0 ? values.slice(separator + 1) : []; const store = new InvockStore(config.database, config); await runStdioProxy({ command: executable, args, cwd: root }, gate(store)); store.close(); }
-else if (command === "serve") { const values = [subcommand, ...rest].filter((item): item is string => item !== undefined); const config = runtime(values); const store = new InvockStore(config.database, config); const api = await startApi(store); console.error(`Invock dashboard: ${api.url}\nInvock dashboard token: ${api.token}\nDatabase: ${config.database}\nKey directory: ${store.keyDirectory}\nPress Ctrl+C to stop.`); await new Promise<void>(resolveSignal => { process.once("SIGINT", resolveSignal); process.once("SIGTERM", resolveSignal); }); await api.close(); store.close(); }
-else if (command === "demo" && (subcommand === "safe" || subcommand === "attack")) await demo(subcommand === "attack");
-else if (command === "forge") { const observations = rest[0] ? JSON.parse(readFileSync(resolve(root, rest[0]), "utf8")) : []; console.log(JSON.stringify(forgePolicy(observations), null, 2)); }
-else if (command === "guard" && subcommand) { const findings = inspectWorkflow({ source: readFileSync(resolve(root, subcommand), "utf8"), path: subcommand }); console.log(JSON.stringify({ ok: findings.length === 0, findings }, null, 2)); if (findings.length > 0) process.exitCode = 1; }
-else if (command === "contain" && subcommand && rest[0]) { const separator = rest.indexOf("--"); const executable = rest[0]; const args = separator >= 0 ? rest.slice(separator + 1) : rest.slice(1); const result = await runContained({ profile: { fixtureRoot: resolve(root, subcommand), allowedCommands: [executable], sandbox: "required" }, command: executable, argv: args }); console.log(JSON.stringify({ ...result, stdout: result.stdout.length > 512 ? "[redacted]" : result.stdout, stderr: result.stderr.length > 512 ? "[redacted]" : result.stderr }, null, 2)); if (result.status !== "completed") process.exitCode = 1; }
-else usage();
+async function demo(attack: boolean): Promise<void> {
+  const store = new InvockStore(":memory:");
+  try {
+    const monitor = gate(store);
+    const request = attack ? { jsonrpc: "2.0" as const, id: 1, method: "tools/call" as const, params: { name: "read_file", arguments: { path: ".env" } } } : { jsonrpc: "2.0" as const, id: 1, method: "tools/call" as const, params: { name: "read_file", arguments: { path: "/workspace/README.md" } } };
+    const outcome = await monitor.intercept(request);
+    console.log(JSON.stringify(outcome.kind === "respond" ? outcome.response : { decision: outcome.decision.verdict, message: "Would forward to upstream server" }, null, 2));
+  } finally { store.close(); }
+}
+
+function simulatePolicy(draft: PolicyDraft, observations: readonly PolicyObservation[]) {
+  const within = (values: readonly string[] | undefined, allowed: readonly string[]) => (values ?? []).every(value => allowed.includes(value));
+  const results = observations.map(observation => ({ tool: observation.tool, allowed: draft.tools.includes(observation.tool) && within(observation.capabilities, draft.capabilities) && within(observation.effects, draft.effects) && within(observation.paths, draft.resources.paths) && within(observation.domains, draft.resources.domains) && within(observation.recipients, draft.resources.recipients) }));
+  return { status: "simulated", executed: false, observations: results.length, allowed: results.filter(item => item.allowed).length, blocked: results.filter(item => !item.allowed).length, results, unmodeledBehavior: "No execution, network, or upstream call occurs during this simulation." };
+}
+
+async function serve(values: string[]): Promise<void> {
+  const strictAuthority = true;
+  values = values.filter(value => value !== "--strict-authority");
+  const config = runtime(values); const store = new InvockStore(config.database, config);
+  if (values.length > 0 && values[0] === "--stdio") {
+    values.shift(); const separator = values.indexOf("--"); const executable = separator >= 0 ? values[separator - 1] : values[0];
+    if (!executable) { store.close(); throw new Error("serve --stdio requires a command"); }
+    const args = separator >= 0 ? values.slice(separator + 1) : values.slice(1);
+    const serverId = "stdio-upstream";
+      try { await runStdioProxy({ command: executable, args, cwd: root, serverId }, gate(store, new PersistentToolRegistry(store, serverId), { serverId })); } finally { store.close(); }
+    return;
+  }
+  try {
+    const monitor = gate(store, staticDescriptors());
+    const apiLeases = new Map<string, CapabilityLease>();
+    const apiLeaseSessions = new Map<string, string>();
+    const apiSessionId = newId("api-session");
+    const api = await startApi(store, { sessionId: apiSessionId, gate: monitor, resolveRuntime: async (input: ApiAuthorizeInput): Promise<ApiRuntimeResolution> => {
+      if (strictAuthority && (!input.agent || !input.projectId || !input.sessionId || input.intentCapsule === undefined || input.authorityBinding === undefined || !input.capabilityLeases)) return { denial: { verdict: "BLOCK", reasonCodes: ["STRICT_AUTHORITY_REQUIRED"] } };
+      let authority: { capsule: IntentCapsule; leases: readonly CapabilityLease[]; sessionId: string } | undefined;
+      if (input.intentCapsule !== undefined) {
+        try { assertCapsule(input.intentCapsule as IntentCapsule); } catch { return { denial: { verdict: "BLOCK", reasonCodes: ["MALFORMED_INTENT_CAPSULE"] } }; }
+        if (!input.agent) return { denial: { verdict: "BLOCK", reasonCodes: ["AGENT_REQUIRED_FOR_INTENT"] } };
+        if (!input.sessionId) return { denial: { verdict: "BLOCK", reasonCodes: ["SESSION_REQUIRED_FOR_INTENT"] } };
+        if (!input.capabilityLeases) return { denial: { verdict: "BLOCK", reasonCodes: ["CAPABILITY_LEASE_REQUIRED"] } };
+        try {
+          const leases = input.capabilityLeases.map(value => value as CapabilityLease);
+          leases.forEach(lease => assertLease(lease));
+          if (leases.at(-1)?.subject !== input.agent) throw new Error("LEASE_AGENT_MISMATCH");
+          const current = leases.map(lease => {
+            const sessionOwner = apiLeaseSessions.get(lease.leaseId);
+            if (sessionOwner && sessionOwner !== input.sessionId) throw new Error("LEASE_SESSION_MISMATCH");
+            apiLeaseSessions.set(lease.leaseId, input.sessionId!);
+            const stored = apiLeases.get(lease.leaseId);
+            if (stored && stored.remainingCalls < lease.remainingCalls) throw new Error("LEASE_STATE_REPLAY");
+            const effective = stored ?? lease;
+            apiLeases.set(effective.leaseId, effective);
+            return effective;
+          });
+          authority = { capsule: input.intentCapsule as IntentCapsule, leases: current, sessionId: input.sessionId };
+        } catch (error) {
+          const reason = error instanceof Error && ["LEASE_STATE_REPLAY", "LEASE_AGENT_MISMATCH", "LEASE_SESSION_MISMATCH"].includes(error.message) ? error.message : "MALFORMED_CAPABILITY_LEASE";
+          return { denial: { verdict: "BLOCK", reasonCodes: [reason] } };
+        }
+      }
+      return { overrides: { ...(input.sessionId ? { sessionId: input.sessionId } : {}), ...(input.projectId ? { projectId: input.projectId } : {}), principal: { principalId: input.agent ?? "local-user", clientId: "invock-sdk", ...(input.agent ? { agentId: input.agent } : {}), scopes: ["*"] }, ...(authority ? { authority: { capsule: authority.capsule, leases: authority.leases, ...(input.authorityBinding !== undefined ? { binding: input.authorityBinding as AuthorityBinding } : {}), sessionId: authority.sessionId, request: { tool: input.tool, capabilities: [], effects: [], resources: { paths: [], domains: [], recipients: [] }, dataLabels: [] }, consume: leases => { leases.forEach(lease => apiLeases.set(lease.leaseId, lease)); } } } : {}) } };
+    } });
+    console.error(`Invock dashboard: ${api.url}\nInvock dashboard token: ${api.token}\nInvock API session: ${apiSessionId}\nDatabase: ${config.database}\nKey directory: ${store.keyDirectory}\nPress Ctrl+C to stop.`);
+    await new Promise<void>(resolveSignal => { process.once("SIGINT", resolveSignal); process.once("SIGTERM", resolveSignal); });
+    await api.close();
+  } finally { store.close(); }
+}
+
+async function main(argv: string[]): Promise<number> {
+  const [command, subcommand, ...initialRest] = argv;
+  if (argv.includes("--help") || argv.includes("-h")) { help(); return 0; }
+  const rest = [...initialRest];
+  if (!command) { help(); return 0; }
+  if (command === "init") {
+    const values = [subcommand, ...rest].filter((item): item is string => item !== undefined); const path = statePath(values); const control = new LocalControlPlane(path);
+    console.log(JSON.stringify({ initialized: true, statePath: path, snapshot: control.exportSnapshot() }, null, 2)); return 0;
+  }
+  if (command === "scan") {
+    const values = [subcommand, ...rest].filter((item): item is string => item !== undefined); const path = statePath(values); const control = new LocalControlPlane(path);
+    console.log(JSON.stringify({ status: "complete", scope: "local-control-plane", statePath: path, snapshot: control.exportSnapshot(), supplyChain: scanSupplyChain(root), unsupportedIntegrations }, null, 2)); return 0;
+  }
+  if (command === "supply-chain" && subcommand === "scan") { const values = [...rest]; const scanRoot = takeOption(values, "--root") ?? root; if (values.length > 0) return usage(); console.log(JSON.stringify(scanSupplyChain(scanRoot), null, 2)); return 0; }
+  if (command === "containment" && subcommand === "certify") {
+    if (rest.length > 0) return usage();
+    const result = await certifyContainment();
+    console.log(JSON.stringify(result, null, 2));
+    return result.status === "pass" ? 0 : result.status === "fail" ? 1 : 2;
+  }
+  if (command === "containment" && subcommand === "inspect" && rest[0]) {
+    const values = rest.slice(1);
+    const directory = takeOption(values, "--directory") ?? resolve(root, ".invock/containment");
+    if (values.length > 0) return usage();
+    console.log(JSON.stringify(await readContainmentRun(directory, rest[0]), null, 2));
+    return 0;
+  }
+  if (command === "run" && subcommand === "--sandbox" && rest[0]) {
+    const config = readJson<{ profile?: ContainmentProfile; fixtureRoot?: string; command?: string; argv?: string[]; env?: Record<string, string> }>(rest[0]);
+    if (!config.command || !Array.isArray(config.argv ?? []) || (config.env !== undefined && (config.env === null || typeof config.env !== "object"))) throw new Error("sandbox config requires command, optional argv, and optional env");
+    const fixtureRoot = resolve(root, config.profile?.fixtureRoot ?? config.fixtureRoot ?? "");
+    if (!fixtureRoot || fixtureRoot === root) throw new Error("sandbox config requires a fixtureRoot");
+    const profile: ContainmentProfile = { ...(config.profile ?? {}), fixtureRoot, allowedCommands: config.profile?.allowedCommands ?? [config.command] };
+    const request = { profile, command: config.command, ...(config.argv ? { argv: config.argv } : {}), ...(config.env ? { env: config.env } : {}) };
+    const result = await runContained(request);
+    const record: UnsignedContainmentRunRecord = { schemaVersion: "invock/containment-run/v2", runId: newId("containment"), createdAt: new Date().toISOString(), requestDigest: digestJson({ profile, command: config.command, argv: config.argv ?? [], envKeys: Object.keys(config.env ?? {}).sort() }), command: config.command, result };
+    const recordPath = await persistContainmentRun(resolve(root, ".invock/containment"), record);
+    const persisted = await readContainmentRun(resolve(root, ".invock/containment"), record.runId);
+    console.log(JSON.stringify({ ...persisted, recordPath }, null, 2));
+    return result.status === "completed" ? 0 : 1;
+  }
+  if (command === "policy" && subcommand === "validate" && rest[0]) { console.log(JSON.stringify({ valid: true, policyVersionId: compilePolicy(parsePolicyYaml(readFileSync(resolve(root, rest[0]), "utf8"))).policyVersionId, policyDigest: compilePolicy(parsePolicyYaml(readFileSync(resolve(root, rest[0]), "utf8"))).policyDigest }, null, 2)); return 0; }
+  if (command === "policy" && subcommand === "learn") {
+    const values = [...rest]; const fromDemo = values.includes("--from-demo"); if (fromDemo) values.splice(values.indexOf("--from-demo"), 1); const observations = values[0] ? readJson<PolicyObservation[]>(values[0]) : fromDemo ? [{ tool: "read_file", capabilities: ["fs.read"], effects: ["data.observe"], paths: ["/workspace"] }] : [];
+    console.log(JSON.stringify(forgePolicy(observations), null, 2)); return 0;
+  }
+  if (command === "policy" && subcommand === "diff" && rest.length >= 2) { console.log(JSON.stringify(diffPolicies(readJson<PolicyDraft>(rest[0]!), readJson<PolicyDraft>(rest[1]!)), null, 2)); return 0; }
+  if (command === "policy" && subcommand === "simulate" && rest[0]) { const draft = readJson<PolicyDraft>(rest[0]); const observations = rest[1] ? readJson<PolicyObservation[]>(rest[1]) : []; console.log(JSON.stringify(simulatePolicy(draft, observations), null, 2)); return 0; }
+  if (command === "policy" && subcommand === "activate" && rest[0]) {
+    const values = rest.slice(1); const approvedBy = takeTextOption(values, "--approved-by"); const approvalId = takeTextOption(values, "--approval-id"); const statement = takeTextOption(values, "--statement"); const output = takeOption(values, "--output");
+    if (!approvedBy || !approvalId || !statement || values.length > 0) throw new Error("policy activate requires --approved-by, --approval-id, and --statement");
+    const activated = activateDraft(readJson<PolicyDraft>(rest[0]), { approvedBy, approvalId, statement, approvedAt: new Date(0).toISOString() }); const rendered = `${JSON.stringify(activated, null, 2)}\n`; if (output) writeFileSync(output, rendered, { mode: 0o600 }); else process.stdout.write(rendered); return 0;
+  }
+  if (command === "policy" && subcommand === "rollback" && rest[0]) {
+    const values = rest.slice(1); const approvedBy = takeTextOption(values, "--approved-by"); const approvalId = takeTextOption(values, "--approval-id"); const statement = takeTextOption(values, "--statement"); const from = takeTextOption(values, "--from") ?? "unknown-current-policy";
+    if (!approvedBy || !approvalId || !statement || values.length > 0) throw new Error("policy rollback requires --approved-by, --approval-id, and --statement");
+    const target = readJson<PolicyDraft>(rest[0]);
+    const activated = activateDraft(target, { approvedBy, approvalId, statement, approvedAt: new Date().toISOString() });
+    console.log(JSON.stringify({ ...activated, lifecycle: { operation: "ROLLBACK", fromPolicyId: from, targetPolicyDigest: target.digest, executed: true } }, null, 2)); return 0;
+  }
+  if (command === "doctor") { const values = [subcommand, ...rest].filter((item): item is string => item !== undefined); const config = runtime(values); const store = new InvockStore(config.database, config); try { const sqlite = store.verifySqliteIntegrity(); console.log(JSON.stringify({ ready: store.isReady(), sqlite: { required: "3.51.3+", ...sqlite }, receiptChain: store.verifyChain() ? "valid" : "invalid", instanceId: store.instanceId, database: config.database, keyDirectory: store.keyDirectory }, null, 2)); } finally { store.close(); } return 0; }
+  if (command === "receipts" && subcommand === "verify") { const config = runtime([...rest]); const store = new InvockStore(config.database, config); try { const valid = store.verifyChain(); console.log(JSON.stringify({ valid, database: config.database, keyDirectory: store.keyDirectory, chain: store.receiptChainStatus() }, null, 2)); if (!valid) return 1; } finally { store.close(); } return 0; }
+  if (command === "receipts" && subcommand === "rotate-key") { const config = runtime([...rest]); const store = new InvockStore(config.database, config); try { console.log(JSON.stringify({ rotated: true, ...store.rotateReceiptSigningKey() }, null, 2)); } finally { store.close(); } return 0; }
+  if (command === "receipts" && subcommand === "export") { const values = [...rest]; const format = formatOption(values); const sessionId = takeTextOption(values, "--session-id"); const config = runtime(values); if (values.length > 0) return usage(); const store = new InvockStore(config.database, config); try { process.stdout.write(renderEvidenceBundle(buildEvidenceBundle(store, sessionId), format)); } finally { store.close(); } return 0; }
+  if (command === "evidence" && subcommand === "bundle") { const values = [...rest]; const sessionId = values[0] && !values[0].startsWith("--") ? values.shift() : undefined; const format = formatOption(values); const config = runtime(values); if (values.length > 0) return usage(); const store = new InvockStore(config.database, config); try { process.stdout.write(renderEvidenceBundle(buildEvidenceBundle(store, sessionId), format)); } finally { store.close(); } return 0; }
+  if (command === "serve" || command === "start") { const values = [subcommand, ...rest].filter((item): item is string => item !== undefined); await serve(values); return 0; }
+  if (command === "judge") { await demo(false); await demo(true); console.log(JSON.stringify({ status: "local-only", unsupportedIntegrations }, null, 2)); return 0; }
+  if (command === "demo" && (subcommand === "safe" || subcommand === "attack")) { await demo(subcommand === "attack"); return 0; }
+  if (command === "forge") { const observations = rest[0] ? readJson<PolicyObservation[]>(rest[0]) : []; console.log(JSON.stringify(forgePolicy(observations), null, 2)); return 0; }
+  if (command === "guard" && subcommand) { const findings = inspectWorkflow({ source: readFileSync(resolve(root, subcommand), "utf8"), path: subcommand }); console.log(JSON.stringify({ ok: findings.length === 0, findings }, null, 2)); return findings.length > 0 ? 1 : 0; }
+  if (command === "contain" && subcommand && rest[0]) { const separator = rest.indexOf("--"); const executable = rest[0]!; const args = separator >= 0 ? rest.slice(separator + 1) : rest.slice(1); const result = await runContained({ profile: { fixtureRoot: resolve(root, subcommand), allowedCommands: [executable], sandbox: "required" }, command: executable, argv: args }); console.log(JSON.stringify({ ...result, stdout: result.stdout.length > 512 ? "[redacted]" : result.stdout, stderr: result.stderr.length > 512 ? "[redacted]" : result.stderr }, null, 2)); return result.status === "completed" ? 0 : 1; }
+  return usage();
+}
+
+try { process.exitCode = await main(process.argv.slice(2)); } catch (error) { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; }

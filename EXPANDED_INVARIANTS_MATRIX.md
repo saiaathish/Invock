@@ -1,5 +1,7 @@
 # Expanded invariant matrix (INV-41..INV-85)
 
+> HISTORICAL/SCOPED MATRIX. This grouped matrix is not the current product certification and does not authorize a READY claim. Any row that depends on Docker or expanded certification must be re-run in the current environment.
+
 Status is evidence-based: `PASS` requires a focused test or runtime proof; `NOT PROVEN` remains a release blocker.
 
 | ID | Invariant | Evidence | Status |
@@ -15,7 +17,7 @@ Status is evidence-based: `PASS` requires a focused test or runtime proof; `NOT 
 | INV-52..INV-53 | Parent/capsule revocation invalidates authority | revocation tests | PASS |
 | INV-54..INV-55 | Receipt binds capsule and lease-chain digests | `test/authority-gateway.test.ts` | PASS |
 | INV-56 | Containment profile validation | `test/containment/runner.test.ts` | PASS |
-| INV-57..INV-60 | Hidden host/network/write/resource abuse denial | `pnpm docker-containment-test`; Docker `none` network, read-only root, no host mounts, dropped capabilities, memory/CPU/PID limits | PASS |
+| INV-57..INV-60 | Hidden host/network/write/resource abuse denial | Docker secure-default profile and bounded probe source; current direct runtime execution timed out | NOT PROVEN |
 | INV-61..INV-62 | Timeout and cleanup | `test/containment/runner.test.ts` | PASS |
 | INV-63..INV-68 | Forge validation, determinism, and policy diffs | `test/forge/forge.test.ts` | PASS |
 | INV-69..INV-71 | Guard unsafe/safe checks and SARIF | `test/guard/guard.test.ts` | PASS |
@@ -30,7 +32,7 @@ Status is evidence-based: `PASS` requires a focused test or runtime proof; `NOT 
 | INV-81 | Dashboard uses real persistent state | `test/api.test.ts` activity/expansion endpoints | PASS |
 | INV-82 | Dashboard never exposes raw secrets | `test/ui/ui.test.ts`, `test/api.test.ts` | PASS |
 | INV-83 | Expanded API mutation routes require authentication | `test/api.test.ts` authenticated route checks | PASS |
-| INV-84 | Full expanded demo | `node --import tsx scripts/expanded-certify.ts` | PASS |
-| INV-85 | Expanded certification twice independently | expanded certification runs base certification and Docker probe twice | PASS |
+| INV-84 | Full expanded demo | `node --import tsx scripts/expanded-certify.ts` | NOT PROVEN |
+| INV-85 | Expanded certification twice independently | expanded certification runs base certification and Docker probe twice | NOT PROVEN |
 
-Release status: READY; all rows in this matrix are `PASS`.
+Release status: NOT READY; this matrix contains scoped evidence and unresolved gates.

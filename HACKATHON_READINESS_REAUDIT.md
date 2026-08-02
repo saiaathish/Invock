@@ -1,10 +1,12 @@
 # Invock Hackathon Readiness Re-Audit Report
 
+> SUPERSEDED HISTORICAL ARTIFACT. This report predates the current product-transformation verification and is not an authoritative READY decision. See `FINAL_PRODUCT_CERTIFICATION.md` and the final task response for the current evidence boundary.
+
 ## 1. Final Verdict
 
-**READY FOR SUBMISSION (PASS)**
+**HISTORICAL PASS — NOT A CURRENT READINESS CLAIM**
 
-The current expanded certification supersedes the earlier limitations: authority, Docker containment, Arena, mutation adequacy, and INV-41..INV-85 now have passing evidence in `EXPANDED_INVARIANTS_MATRIX.md`.
+The earlier expanded certification was narrower than the mandate's absolute stop condition. Current authority hardening and local evidence are verified, while Docker runtime proof, full Arena coverage, mutation adequacy, clean rehearsals, accessibility, and independent final gates remain separately scoped.
 
 ## 2. Executive Summary
 

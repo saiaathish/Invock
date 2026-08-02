@@ -2,12 +2,21 @@ import type { Capability, Effect } from "../core/types.js";
 import { digestJson, stableUnique } from "../core/canonical.js";
 import type { AuthorityBudgets, AuthorityDataConstraints, AuthorityResourceConstraints } from "./types.js";
 
-const capabilities = new Set<Capability>(["fs.read", "fs.write", "fs.delete", "net.read", "net.send", "process.execute", "process.shell", "message.send", "secret.read", "unknown"]);
-const effects = new Set<Effect>(["data.observe", "data.modify", "data.delete", "external.read", "external.disclosure", "external.communication", "process.spawn", "command.interpretation", "persistent.change", "irreversible.action", "unknown"]);
+const capabilities = new Set<Capability>(["fs.read", "fs.write", "fs.delete", "net.read", "net.send", "process.execute", "process.shell", "message.send", "secret.read"]);
+const effects = new Set<Effect>(["data.observe", "data.modify", "data.delete", "external.read", "external.disclosure", "external.communication", "process.spawn", "command.interpretation", "persistent.change", "irreversible.action"]);
 
 export function object(value: unknown, name: string): Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error(`${name} must be an object`);
   return value as Record<string, unknown>;
+}
+
+/** Freeze normalized authority records so callers cannot mutate signed inputs in place. */
+export function immutable<T>(value: T): T {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const child of Object.values(value as Record<string, unknown>)) immutable(child);
+    Object.freeze(value);
+  }
+  return value;
 }
 
 export function strings(value: unknown, name: string): string[] {

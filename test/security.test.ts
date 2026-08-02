@@ -34,7 +34,7 @@ function fixture() {
   const gate = new InvocationGate(compiled, new StaticDescriptorRegistry({
     read: { fields: [{ pointer: "/path", type: "path", access: "read" }] },
     post: { fields: [{ pointer: "/url", type: "url", methodPointer: "/method" }, { pointer: "/body", type: "data" }] },
-  }), store, { cwd: dir, projectRoot: dir, organizationDomains: ["example.com"], sessionId: "test", principal: { principalId: "tester", clientId: "test", scopes: [] } });
+  }), store, { cwd: dir, projectRoot: dir, organizationDomains: ["example.com"], sessionId: "test", principal: { principalId: "tester", clientId: "test", scopes: [] } }, { allowUnboundForTests: true });
   return { dir, store, gate, close: () => { store.close(); rmSync(dir, { recursive: true, force: true }); } };
 }
 const call = (id: number, name: string, argumentsValue: Record<string, unknown>, approval?: string) => ({ jsonrpc: "2.0" as const, id, method: "tools/call" as const, params: { name, arguments: argumentsValue, ...(approval ? { _meta: { "io.invock/approval-id": approval } } : {}) } });

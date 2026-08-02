@@ -1,0 +1,21 @@
+/** Public TypeScript entry point for embedding Invock in an agent runtime. */
+export { InvockClient, InvockHttpError } from "./sdk/index.js";
+export type { AuthorizeInput, DecisionResponse, DecisionVerdict, ExecutionResponse, ExecutionResult, HealthResponse, InvockClientOptions } from "./sdk/index.js";
+export { InvocationGate, StaticDescriptorRegistry } from "./gateway/engine.js";
+export type { GateOutcome, InvocationGateOptions, InvocationRuntimeOverrides } from "./gateway/engine.js";
+export { InvockStore } from "./storage/store.js";
+export type { StoreOptions } from "./storage/store.js";
+export { IdentityAuthority } from "./identity/index.js";
+export { assertIdentityEvidenceBinding, createIdentityEvidenceBinding } from "./identity/index.js";
+export type { AgentIdentity, AgentSession, AgentSessionStatus, EnrollmentInput, EnrollmentResult, EnrollmentToken, IdentityEvidenceBinding, IdentityRuntimeContext, SoftwareWorkloadAttestation, TrustState } from "./identity/index.js";
+export * from "./authority/index.js";
+export type { ApprovedContainmentProfile, ContainmentRunIntegrity, ContainmentRunRecord, TrustedContainmentKey, TrustedContainmentKeys, UnsignedContainmentRunRecord } from "./containment/index.js";
+export { OpenAIInvockAdapter } from "./integrations/openai.js";
+export { SecondaryInvockAdapter } from "./integrations/secondary.js";
+export type { OpenAIToolCall, AdapterOptions } from "./integrations/openai.js";
+export type { SecondaryToolCall, SecondaryAdapterOptions } from "./integrations/secondary.js";
+export type { AdapterExecution, AuthorizedToolCall, ToolExecutor } from "./integrations/types.js";
+export { startApi } from "./api/server.js";
+export type { ApiAuthorizeInput, ApiAuthorizeResult, ApiExecutionResponse, ApiExecutionResult, ApiHandle, ApiOptions, ApiRuntimeResolution, ApiRuntimeResolver } from "./api/server.js";
+export { generateSupplyChainSigningMaterial, scanSupplyChain, signSupplyChainReport, verifySupplyChainSignature } from "./supplychain/index.js";
+export type { SupplyChainContainerReference, SupplyChainDependency, SupplyChainEvidenceFile, SupplyChainReport, SupplyChainSignature, SupplyChainSigningMaterial } from "./supplychain/index.js";

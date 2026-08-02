@@ -120,6 +120,10 @@ export class SseSessionManager {
   heartbeat(sessionId: string): void {
     const session = this.sessions.get(sessionId);
     if (!session || session.closed) return;
+    if (session.queue.length >= this.maxQueueLength) {
+      this.closeSession(sessionId);
+      return;
+    }
     session.queue.push(": ping\n\n");
     this.pump(session);
   }
@@ -184,8 +188,6 @@ export function startSseEndpoint(
     "x-accel-buffering": "no",
   });
 
-  response.write(sseFrame("endpoint", options.postUrl));
-
   let session: SseSession;
   try {
     const sessionOpts: { idleTimeoutMs?: number; heartbeatMs?: number } = {};
@@ -196,6 +198,11 @@ export function startSseEndpoint(
     response.end();
     return;
   }
+
+  // Register the session before emitting the first frame so a fast peer can
+  // never observe an endpoint event from a response that the manager does not
+  // yet own.
+  response.write(sseFrame("endpoint", options.postUrl));
 
   const onClose = (): void => {
     manager.closeSession(session.id);

@@ -11,7 +11,8 @@ export type Effect =
   | "command.interpretation" | "persistent.change" | "irreversible.action"
   | "unknown";
 
-export type DataLabel = "public" | "internal" | "secret" | "credential" | "private_key" | "untrusted_content";
+/** Labels are deliberately explicit; `unknown` is safer than silently treating an unclassified value as public. */
+export type DataLabel = "public" | "internal" | "secret" | "credential" | "private_key" | "personal" | "financial" | "health" | "source_code" | "regulated" | "unknown" | "untrusted_content";
 
 export interface Principal {
   principalId: string;
@@ -87,7 +88,12 @@ export interface LineageReference {
   sourceInvocationId: string;
   labels: DataLabel[];
   matchedFingerprintIds: string[];
-  matchKinds: Array<"exact" | "base64" | "base64url" | "urlencoded">;
+  matchKinds: Array<"exact" | "base64" | "base64url" | "urlencoded" | "hex" | "gzip" | "deflate" | "brotli" | "sha256" | "sha1" | "md5" | "hmac_sha256" | "reversed" | "rot13">;
+  /** Persisted taint identity and expiry make detached lineage evidence auditable. */
+  taintRecordId?: string;
+  expiresAt?: string;
+  /** Digest of the complete keyed fingerprint record for detached verification. */
+  fingerprintProofDigest: string;
 }
 
 export interface ActionEnvelope {

@@ -8,7 +8,7 @@ const root = process.cwd();
 const mutations: Mutation[] = [
   { id: "redirect-cross-host", file: "src/net/index.ts", needle: "if (next.hostname !== current.hostname && !policy.allowCrossHost)", replacement: "if (false && next.hostname !== current.hostname && !policy.allowCrossHost)", test: "test/net.test.ts" },
   { id: "lease-tool-boundary", file: "src/authority/evaluate.ts", needle: "if (leaf && request.tool && !leaf.constraints.tools.includes(request.tool))", replacement: "if (leaf && false && request.tool && !leaf.constraints.tools.includes(request.tool))", test: "test/authority/authority.test.ts" },
-  { id: "arena-adapter-dispatch", file: "src/arena/index.ts", needle: "execute ? execute(scenario, context) : scenario.invoke(context)", replacement: "scenario.invoke(context)", test: "test/arena/arena.test.ts" },
+  { id: "arena-adapter-dispatch", file: "src/arena/index.ts", needle: "execute ? validateResult(await execute(scenario, context), scenario.id) : validateResult(await scenario.invoke(context), scenario.id)", replacement: "validateResult(await scenario.invoke(context), scenario.id)", test: "test/arena/arena.test.ts" },
 ];
 
 const results: Array<{ id: string; killed: boolean; status: number | null }> = [];

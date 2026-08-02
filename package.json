@@ -11,27 +11,38 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test test/*.test.ts test/**/*.test.ts",
-    "test:unit": "node --import tsx --test test/*.test.ts test/**/*.test.ts",
+    "lint": "node --import tsx scripts/lint.ts",
+    "claim-consistency": "node --import tsx scripts/claim-consistency.ts",
+    "test": "INVOCK_TEST_MODE=1 node --import tsx --test test/*.test.ts test/**/*.test.ts",
+    "test:unit": "INVOCK_TEST_MODE=1 node --import tsx --test test/*.test.ts test/**/*.test.ts",
     "certify": "pnpm build && node dist/scripts/certify.js",
     "invock": "node --import tsx src/cli.ts",
     "demo:safe": "node --import tsx src/cli.ts demo safe",
     "demo:attack": "node --import tsx src/cli.ts demo attack",
     "demo": "node --import tsx scripts/demo.ts",
     "demo:certify": "node --import tsx scripts/demo.ts",
+    "judge": "node --import tsx scripts/judge.ts",
+    "judge:certify": "node --import tsx scripts/judge.ts --automated",
     "arena": "node --import tsx scripts/arena/run.ts",
+    "supply-chain": "node --import tsx scripts/supply-chain.ts",
     "forge": "node --import tsx src/cli.ts forge",
     "guard": "node --import tsx src/cli.ts guard",
-    "contain": "node --import tsx src/cli.ts contain"
-    ,"mutation-review": "node --import tsx scripts/mutation-review.ts",
-    "docker-containment-test": "node --import tsx scripts/docker-containment-test.ts"
-    ,"expanded-certify": "node --import tsx scripts/expanded-certify.ts"
+    "contain": "node --import tsx src/cli.ts contain",
+    "containment:certify": "node --import tsx scripts/containment-certify.ts",
+    "mutation-review": "node --import tsx scripts/mutation-review.ts",
+    "accessibility:certify": "node --import tsx scripts/accessibility-certify.ts",
+    "docker-containment-test": "node --import tsx scripts/docker-containment-test.ts",
+    "expanded-certify": "node --import tsx scripts/expanded-certify.ts",
+    "release:rehearsal": "node --import tsx scripts/release-rehearsal.ts",
+    "final-certify": "node --import tsx scripts/final-certify.ts",
+    "protocol-certify": "INVOCK_TEST_MODE=1 node --import tsx --test test/protocol/protocol.test.ts"
   },
   "dependencies": {
-    "yaml": "2.8.1"
+    "yaml": "2.8.3"
   },
   "devDependencies": {
     "@types/node": "22.18.0",
+    "playwright": "1.62.1",
     "tsx": "4.20.5",
     "typescript": "5.9.2"
   }
