@@ -1,7 +1,10 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { sha256 } from "../src/core/canonical.js";
+import { createCycloneDx15Document, validateCycloneDx15, verifySupplyChainSignature } from "../src/supplychain/index.js";
 
 type PhaseStatus = "PASS" | "FAIL" | "NOT_PROVEN";
 interface Phase { name: string; status: PhaseStatus; detail: string; }
@@ -117,20 +120,14 @@ function advisoryScanClean(output: string): boolean {
   return false;
 }
 
-const CURRENT_AUDIT_REPORTS = [
-  "post-fix-authorization.md",
-  "post-fix-protocols.md",
-  "post-fix-containment.md",
-  "post-fix-supply-chain.md",
-  "post-fix-product.md",
-] as const;
-
 function validateIndependentAudits(): Phase {
   const directory = join(root, ".artifacts", "independent-audits");
+  const currentReports = existsSync(directory) ? readdirSync(directory).filter(file => /^final-current-.*\.md$/u.test(file)).sort() : [];
+  if (currentReports.length === 0) return { name: "Independent audits", status: "NOT_PROVEN", detail: "no current final-current-*.md audit reports were found" };
   const missing: string[] = [];
   const invalid: string[] = [];
   const verdicts: string[] = [];
-  for (const file of CURRENT_AUDIT_REPORTS) {
+  for (const file of currentReports) {
     const path = join(directory, file);
     if (!existsSync(path)) {
       missing.push(file);
@@ -158,6 +155,126 @@ function validateIndependentAudits(): Phase {
   if (invalid.length > 0) return { name: "Independent audits", status: "FAIL", detail: `current audit reports are structurally invalid: ${invalid.join(", ")}` };
   if (verdicts.every(verdict => verdict.endsWith("=PASS"))) return { name: "Independent audits", status: "PASS", detail: `five current audit reports PASS: ${verdicts.join(", ")}` };
   return { name: "Independent audits", status: "FAIL", detail: `current audit reports did not all PASS: ${verdicts.join(", ")}` };
+}
+
+function gitValue(args: string[]): string {
+  const result = spawnSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  if (result.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${tail(`${result.stdout ?? ""}${result.stderr ?? ""}`)}`);
+  return (result.stdout ?? "").trim();
+}
+
+function recordValue(value: unknown, name: string): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error(`${name} must be an object`);
+  return value as Record<string, unknown>;
+}
+
+function evidencePath(baseDirectory: string, value: unknown, name: string, fallback?: string): string {
+  const selected = value === undefined ? fallback : value;
+  if (typeof selected !== "string" || selected.length === 0) throw new Error(`${name} path is required`);
+  return isAbsolute(selected) ? selected : resolve(baseDirectory, selected);
+}
+
+function verifyGitHubAttestation(repository: string, raw: unknown, expectedPredicateType: string, expectedSha256: string, name: string): void {
+  const attestation = recordValue(raw, name);
+  if (attestation.verifier !== "gh attestation verify") throw new Error(`${name} must identify gh attestation verify as its verifier`);
+  if (typeof attestation.subject !== "string" || attestation.subject.length === 0) throw new Error(`${name} subject is missing`);
+  if (attestation.predicateType !== expectedPredicateType) throw new Error(`${name} predicate type is not ${expectedPredicateType}`);
+  const args = ["attestation", "verify", attestation.subject, "--repo", repository, "--format", "json", "--predicate-type", expectedPredicateType];
+  if (typeof attestation.signerWorkflow === "string" && attestation.signerWorkflow.length > 0) args.push("--signer-workflow", attestation.signerWorkflow);
+  const result = spawnSync("gh", args, { cwd: root, encoding: "utf8", timeout: 120_000, killSignal: "SIGKILL", stdio: ["ignore", "pipe", "pipe"] });
+  if (result.status !== 0) throw new Error(`${name} verification command failed: ${tail(`${result.stdout ?? ""}${result.stderr ?? ""}`)}`);
+  let records: unknown;
+  try { records = JSON.parse(result.stdout ?? ""); } catch { throw new Error(`${name} verification did not return JSON`); }
+  if (!Array.isArray(records) || records.length === 0) throw new Error(`${name} verification returned no attestations`);
+  const verified = records.some(item => {
+    if (item === null || typeof item !== "object" || Array.isArray(item)) return false;
+    const verification = (item as Record<string, unknown>).verificationResult;
+    if (verification === null || typeof verification !== "object" || Array.isArray(verification)) return false;
+    const resultRecord = verification as Record<string, unknown>;
+    const statement = resultRecord.statement;
+    const signature = resultRecord.signature;
+    const timestamps = resultRecord.verifiedTimestamps;
+    if (statement === null || typeof statement !== "object" || Array.isArray(statement) || !Array.isArray(timestamps) || timestamps.length === 0) return false;
+    const statementRecord = statement as Record<string, unknown>;
+    if (statementRecord.predicateType !== expectedPredicateType || !Array.isArray(statementRecord.subject)) return false;
+    if (signature === null || typeof signature !== "object" || Array.isArray(signature) || !(signature as Record<string, unknown>).certificate) return false;
+    return (statementRecord.subject as unknown[]).some(subject => {
+      if (subject === null || typeof subject !== "object" || Array.isArray(subject)) return false;
+      const digest = (subject as Record<string, unknown>).digest;
+      return digest !== null && typeof digest === "object" && !Array.isArray(digest) && (digest as Record<string, unknown>).sha256 === expectedSha256;
+    });
+  });
+  if (!verified) throw new Error(`${name} verification did not prove the expected subject digest, predicate, certificate, and verified timestamp`);
+}
+
+function verifyChecksumManifest(directory: string, manifestPath: string): number {
+  const manifest = readFileSync(manifestPath, "utf8");
+  const base = resolve(directory);
+  let checked = 0;
+  for (const line of manifest.split(/\r?\n/u).filter(Boolean)) {
+    const match = /^(?<digest>[0-9a-f]{64})  (?<file>.+)$/u.exec(line);
+    if (!match?.groups?.digest || !match.groups.file) throw new Error(`invalid checksum line: ${line}`);
+    const file = resolve(base, match.groups.file);
+    const withinBase = relative(base, file);
+    if (withinBase.startsWith("..") || isAbsolute(withinBase)) throw new Error(`checksum path escapes artifact directory: ${match.groups.file}`);
+    const actual = createHash("sha256").update(readFileSync(file)).digest("hex");
+    if (actual !== match.groups.digest) throw new Error(`checksum mismatch: ${match.groups.file}`);
+    checked += 1;
+  }
+  if (checked === 0) throw new Error("checksum manifest is empty");
+  return checked;
+}
+
+function validateExternalReleaseEvidence(): Phase {
+  const argumentIndex = process.argv.indexOf("--release-evidence");
+  const selected = argumentIndex >= 0 ? process.argv[argumentIndex + 1] : process.env.INVOCK_RELEASE_EVIDENCE;
+  if (!selected) return { name: "External release provenance", status: "NOT_PROVEN", detail: "no exact release-evidence JSON was supplied; tag, Actions, artifact, attestation, and GHCR gates remain unproven" };
+  try {
+    const evidenceFile = resolve(root, selected);
+    const evidence = recordValue(JSON.parse(readFileSync(evidenceFile, "utf8")), "release evidence");
+    if (evidence.schema !== "invock/release-evidence/v1") throw new Error("unsupported release evidence schema");
+    const commit = gitValue(["rev-parse", "HEAD"]);
+    if (evidence.commit !== commit) throw new Error(`evidence commit ${String(evidence.commit)} does not match HEAD ${commit}`);
+    if (typeof evidence.tag !== "string" || !/^v\d+\.\d+\.\d+$/u.test(evidence.tag)) throw new Error("evidence tag is not a semantic version");
+    if (gitValue(["rev-parse", `refs/tags/${evidence.tag}^{commit}`]) !== commit) throw new Error("release tag does not point to HEAD");
+    if (gitValue(["status", "--porcelain"]) !== "") throw new Error("release provenance requires a clean worktree");
+    if (typeof evidence.repository !== "string" || !/^[^/\s]+\/[^/\s]+$/u.test(evidence.repository)) throw new Error("repository identity is missing");
+    if (evidence.workflow !== "release provenance" || evidence.conclusion !== "success") throw new Error("release-provenance Actions run was not successful");
+    if (!(typeof evidence.runId === "number" && Number.isInteger(evidence.runId) && evidence.runId > 0) && !(typeof evidence.runId === "string" && /^\d+$/u.test(evidence.runId))) throw new Error("release-provenance run id is missing");
+
+    const artifact = recordValue(evidence.artifact, "artifact");
+    if (typeof artifact.name !== "string" || artifact.name.length === 0) throw new Error("release artifact name is missing");
+    const evidenceDirectory = dirname(evidenceFile);
+    const directory = evidencePath(evidenceDirectory, artifact.directory, "artifact.directory");
+    const manifestPath = evidencePath(directory, artifact.checksumManifest, "artifact.checksumManifest", "final-sha256sums.txt");
+    const checkedFiles = verifyChecksumManifest(directory, manifestPath);
+    const releaseRefPath = evidencePath(directory, artifact.releaseRef, "artifact.releaseRef", "release-ref.txt");
+    const releaseRef = readFileSync(releaseRefPath, "utf8");
+    if (!new RegExp(`^release_commit=${commit}$`, "mu").test(releaseRef) || !new RegExp(`^release_ref=${evidence.tag}$`, "mu").test(releaseRef)) throw new Error("downloaded release-ref.txt does not bind the tag and commit");
+    const supplyPath = evidencePath(directory, artifact.supplyChain, "artifact.supplyChain", "supply-chain.json");
+    const sbomPath = evidencePath(directory, artifact.sbom, "artifact.sbom", "sbom.cdx.json");
+    const report = JSON.parse(readFileSync(supplyPath, "utf8"));
+    const sbom = JSON.parse(readFileSync(sbomPath, "utf8"));
+    if (!verifySupplyChainSignature(report) || report.signatureStatus !== "verified") throw new Error("downloaded supply-chain signature did not verify");
+    if (!validateCycloneDx15(sbom) || JSON.stringify(sbom) !== JSON.stringify(createCycloneDx15Document(report.sbom))) throw new Error("downloaded SBOM is invalid or does not match the signed report");
+
+    const attestations = recordValue(evidence.attestations, "attestations");
+    const releaseRefDigest = createHash("sha256").update(readFileSync(releaseRefPath)).digest("hex");
+    verifyGitHubAttestation(evidence.repository, attestations.releaseEvidence, "https://slsa.dev/provenance/v1", releaseRefDigest, "releaseEvidence");
+    const ghcr = recordValue(evidence.ghcr, "ghcr");
+    if (typeof ghcr.image !== "string" || !ghcr.image.startsWith("ghcr.io/")) throw new Error("GHCR image identity is missing");
+    if (typeof ghcr.digest !== "string" || !/^sha256:[0-9a-f]{64}$/u.test(ghcr.digest)) throw new Error("GHCR digest is missing or invalid");
+    const imageSubject = `oci://${ghcr.image}@${ghcr.digest}`;
+    const imageAttestation = recordValue(attestations.containmentImage, "containmentImage");
+    if (imageAttestation.subject !== imageSubject) throw new Error("containmentImage attestation subject does not match the GHCR digest");
+    verifyGitHubAttestation(evidence.repository, imageAttestation, "https://slsa.dev/provenance/v1", ghcr.digest.slice("sha256:".length), "containmentImage");
+    const sbomAttestation = recordValue(attestations.sbom, "sbom");
+    if (sbomAttestation.subject !== imageSubject) throw new Error("SBOM attestation subject does not match the GHCR digest");
+    verifyGitHubAttestation(evidence.repository, sbomAttestation, "https://cyclonedx.org/bom", ghcr.digest.slice("sha256:".length), "sbom");
+    return { name: "External release provenance", status: "PASS", detail: `tag ${evidence.tag} targets HEAD ${commit}; successful release-provenance run ${String(evidence.runId)}; ${checkedFiles} downloaded artifact files and signed SBOM verified; GitHub SLSA/CycloneDX attestations and GHCR ${ghcr.digest} cryptographically verified` };
+  } catch (error) {
+    return { name: "External release provenance", status: "FAIL", detail: `release evidence rejected: ${error instanceof Error ? error.message : String(error)}` };
+  }
 }
 
 function main(): number {
@@ -200,13 +317,19 @@ function main(): number {
     else phases.push({ name: "Performance evaluation", status: arena.status, detail: "depends on measured Arena output" });
     runTests("Guard certification", /test\/guard\//u);
 
-    const supply = run("Supply-chain scan", "pnpm", ["supply-chain", "--", "--sign"], output => output.includes('"lockfileStatus": "present"') && output.includes('"digestPinned": true') ? undefined : "supply-chain report lacks lockfile or pinned-container evidence");
-    const supplyJson = supply.output.includes('"bomFormat": "CycloneDX"') && supply.output.includes('"signatureStatus": "verified"') && supply.output.includes('"provenance": "signed-local-evidence"') && supply.output.includes('"trust": "self-generated-local-evidence"');
-    phases.push({ name: "SBOM generation", status: supply.status === "PASS" && supplyJson ? "PASS" : supply.status, detail: supplyJson ? "CycloneDX 1.5 SBOM and reproducibility payload are present with a locally verified Ed25519 signature" : "CycloneDX SBOM or local signature evidence was not verified" });
     const audit = run("Dependency advisory scan", "pnpm", ["audit", "--prod", "--json"]);
     const advisoryClean = audit.status === "PASS" && advisoryScanClean(audit.output);
+    const advisoryStatus = advisoryClean ? "queried-no-findings" : "queried-findings";
+    const cyclonedxDirectory = mkdtempSync(join(tmpdir(), "invock-final-sbom-"));
+    const cyclonedxPath = join(cyclonedxDirectory, "sbom.cdx.json");
+    const supply = run("Supply-chain scan", "pnpm", ["supply-chain", "--", "--sign", "--advisory-status", advisoryStatus, "--advisory-evidence", sha256(audit.output), "--cyclonedx-out", cyclonedxPath], output => output.includes('"lockfileStatus": "present"') && output.includes('"digestPinned": true') && output.includes(`"advisoryStatus": "${advisoryStatus}"`) ? undefined : "supply-chain report lacks lockfile, pinned-container, or advisory evidence");
+    let cyclonedxValid = false;
+    try { cyclonedxValid = existsSync(cyclonedxPath) && validateCycloneDx15(JSON.parse(readFileSync(cyclonedxPath, "utf8"))); } catch { cyclonedxValid = false; }
+    rmSync(cyclonedxDirectory, { recursive: true, force: true });
+    const supplyJson = supply.output.includes('"bomFormat": "CycloneDX"') && supply.output.includes('"signatureStatus": "verified"') && supply.output.includes('"provenance": "signed-local-evidence"') && supply.output.includes('"trust": "self-generated-local-evidence"') && supply.output.includes(`"advisoryStatus": "${advisoryStatus}"`);
+    phases.push({ name: "SBOM generation", status: supply.status === "PASS" && supplyJson && cyclonedxValid ? "PASS" : supply.status, detail: supplyJson && cyclonedxValid ? "CycloneDX 1.5 document validation, reproducibility payload, advisory digest, and locally verified Ed25519 signature passed" : "CycloneDX document, advisory binding, or local signature evidence was not verified" });
     phases.push({ name: "Local supply-chain evidence", status: supply.status === "PASS" && supplyJson && advisoryClean ? "PASS" : supply.status === "FAIL" || audit.status === "FAIL" ? "FAIL" : "NOT_PROVEN", detail: advisoryClean && supplyJson ? "dependency advisory scan is clean and the local supply-chain evidence signature verified; this is not external provenance" : "advisory or signed local evidence is incomplete" });
-    phases.push({ name: "External release provenance", status: "NOT_PROVEN", detail: "No trusted registry/CI artifact attestation, transparency-log inclusion, or production signing-custody evidence was presented by the local checkout" });
+    phases.push(validateExternalReleaseEvidence());
 
     run("Mutation tests", "pnpm", ["mutation-review"], output => /"killed":\s*3,\s*"total":\s*3/u.test(output) ? undefined : "mutation report did not prove all configured mutations killed");
     run("Demo certification", "pnpm", ["demo:certify"], output => output.includes("INVOCK DEMO CERTIFICATION: PASS") ? undefined : "demo certification banner missing");

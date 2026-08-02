@@ -31,6 +31,10 @@ digest. The attestations use GitHub's OIDC identity and transparency-backed
 attestation service; they are separate from Invock's locally generated Ed25519
 evidence signature.
 
+The audited release scope is the OCI containment image and its downloaded
+release-evidence artifact in GHCR. npm publication is intentionally outside
+this scope; this workflow makes no npm package or npm provenance claim.
+
 Pinned action sources verified against the GitHub API and upstream tag sources:
 
 | Action | Version | Commit SHA |

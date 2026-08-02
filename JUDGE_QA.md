@@ -85,7 +85,7 @@ Answers below use `IMPLEMENTED`, `PLANNED`, `NOT PROVEN`, and `FALSE` labels so 
 **A:** Not yet. `NOT PROVEN`. The requirement is defined as an acceptance gate, and the current page must pass actual keyboard, focus, contrast, semantics, responsive, and reduced-motion checks before that word is used as a result.
 
 **Q: Your old certification says PASS. Why should I trust it?**<br>
-**A:** Trust the command and scope, not the banner. The current verification run independently executed `pnpm build` and `pnpm test` with 283 passing tests, plus bounded CLI/API probes and local judge/Arena checks. Older reports contain claims that conflict with current source or have narrower test scope; those contradictions are `FALSE` for broad claims and are not repeated here.
+**A:** Trust the command and scope, not the banner. The current verification run independently executed `pnpm build` and `pnpm test` with 291 passing tests, plus bounded CLI/API probes and local judge/Arena checks. Older reports contain claims that conflict with current source or have narrower test scope; those contradictions are `FALSE` for broad claims and are not repeated here.
 
 **Q: Can a compromised client bypass Invock?**<br>
 **A:** The product only controls requests that actually traverse its supported mediation boundary. A client that routes around the monitor is outside this proof. Deployment must therefore make the monitor the enforced path; that deployment property is `NOT PROVEN` by this local repository alone.
@@ -101,7 +101,7 @@ Answers below use `IMPLEMENTED`, `PLANNED`, `NOT PROVEN`, and `FALSE` labels so 
 Current executable evidence for this handoff:
 
 - `pnpm build`: exit 0.
-- `pnpm test`: 283 passed, 0 failed, 0 skipped.
+- `pnpm test`: 291 passed, 0 failed, 0 skipped.
 - `pnpm invock --help`: printed the current lifecycle, policy, judge, supply-chain, and containment commands and exited 0.
 - `pnpm arena`: 18 scenarios × 3 repetitions; protected attack block rate 100% (51/51), benign completion 100% (3/3), cleanup completed.
 - `pnpm demo:safe`: ALLOW / “Would forward to upstream server”.

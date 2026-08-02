@@ -43,6 +43,7 @@ export function evaluateMonotonicAuthority(capsule: IntentCapsule, leases: reado
   if (capsule.authorityBinding && request.authorityBindingDigest !== capsule.authorityBinding.bindingDigest) reasons.push("AUTHORITY_BINDING_MISMATCH");
   if (!capsule.authorityBinding && request.authorityBindingDigest !== undefined) reasons.push("UNEXPECTED_AUTHORITY_BINDING");
   const leaf = chain.at(-1);
+  if (chain[0] && chain[0].parentLeaseId === undefined && chain[0].issuer !== capsule.rootIssuer) reasons.push("ROOT_LEASE_ISSUER_MISMATCH");
   if (request.runtimeSubject !== undefined) {
     if (capsule.authorityBinding && !capsule.humanActivation) reasons.push("HUMAN_ACTIVATION_REQUIRED");
     if (leaf && leaf.subject !== request.runtimeSubject) reasons.push("LEASE_SUBJECT_RUNTIME_MISMATCH");

@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { parsePolicyYaml, compilePolicy } from "./core/policy.js";
 import { InvocationGate, StaticDescriptorRegistry, type DescriptorRegistry } from "./gateway/engine.js";
 import { runStdioProxy } from "./gateway/stdio.js";
@@ -18,8 +18,9 @@ import type { ToolCallRequest } from "./core/types.js";
 import type { ApiAuthorizeInput, ApiRuntimeResolution } from "./api/server.js";
 import { assertCapsule } from "./authority/capsule.js";
 import { assertLease } from "./authority/lease.js";
-import type { AuthorityBinding } from "./authority/binding.js";
+import type { AuthorityBinding, TrustedApproverKeys } from "./authority/binding.js";
 import type { CapabilityLease, IntentCapsule } from "./authority/types.js";
+import { IdentityAuthority } from "./identity/index.js";
 import { scanSupplyChain } from "./supplychain/index.js";
 import { PersistentToolRegistry } from "./registry/registry.js";
 
@@ -46,8 +47,11 @@ Usage:
   invock receipts export --format json|ndjson|markdown [--session-id <id>] [--database <path>] [--key-directory <path>]
   invock evidence bundle [<session-id>] [--database <path>] [--key-directory <path>] [--format json|ndjson|markdown]
   invock start [--database <path>] [--key-directory <path>]
-  invock serve [--strict-authority] [--database <path>] [--key-directory <path>]
-  invock serve --stdio [--strict-authority] [--database <path>] [--key-directory <path>] <command> [-- <args...>]
+  invock serve [--strict-authority] [--session-id <id>] [--trusted-approvers <json>] [--database <path>] [--key-directory <path>]
+  invock serve --stdio [--strict-authority] [--session-id <id>] [--trusted-approvers <json>] [--database <path>] [--key-directory <path>] <command> [-- <args...>]
+  invock identity enroll [--agent <id>] --organization <id> --project <id> [--display-name <name>] [--runtime-type <type>] [--key-directory <path>]
+  invock identity attest --agent <id> [--manifest <json-file>] [--key-directory <path>]
+  invock identity session --agent <id> --project <id> [--ttl <seconds>] [--key-directory <path>]
   invock scan
   invock judge
   invock demo safe|attack
@@ -79,10 +83,12 @@ function takeTextOption(values: string[], name: string): string | undefined {
   values.splice(index, 2);
   return value;
 }
-function runtime(values: string[]): { database: string; keyDirectory?: string } {
+function runtime(values: string[]): { database: string; keyDirectory?: string; sessionId?: string; trustedApproversPath?: string } {
   const database = takeOption(values, "--database") ?? process.env.INVOCK_DATABASE_PATH ?? resolve(root, ".invock/invock.sqlite");
   const keyDirectory = takeOption(values, "--key-directory") ?? process.env.INVOCK_KEY_DIRECTORY;
-  return keyDirectory ? { database, keyDirectory } : { database };
+  const sessionId = takeTextOption(values, "--session-id") ?? process.env.INVOCK_SESSION_ID;
+  const trustedApproversPath = takeOption(values, "--trusted-approvers") ?? (process.env.INVOCK_TRUSTED_APPROVER_KEYS ? resolve(root, process.env.INVOCK_TRUSTED_APPROVER_KEYS) : undefined);
+  return { database, ...(keyDirectory ? { keyDirectory } : {}), ...(sessionId ? { sessionId } : {}), ...(trustedApproversPath ? { trustedApproversPath } : {}) };
 }
 function statePath(values: string[]): string { return takeOption(values, "--state") ?? process.env.INVOCK_CONTROL_PLANE_PATH ?? resolve(root, ".invock/control-plane.json"); }
 function formatOption(values: string[], defaultValue: EvidenceFormat = "json"): EvidenceFormat {
@@ -98,8 +104,24 @@ function staticDescriptors(): DescriptorRegistry {
     run_command: { fields: [{ pointer: "/command", type: "command" }] },
   });
 }
-function gate(store: InvockStore, descriptors: DescriptorRegistry = staticDescriptors(), options: { serverId?: string } = {}) {
-  return new InvocationGate(compilePolicy(parsePolicyYaml(readFileSync(resolve(root, "policies/default.yaml"), "utf8"))), descriptors, store, { cwd: root, projectRoot: root, organizationDomains: ["example.com"], sessionId: "stdio-local", ...(options.serverId ? { serverId: options.serverId } : {}), principal: { principalId: "local-user", clientId: "invock-cli", scopes: ["*"] } }, { requireAuthority: true, requireIdentity: true });
+function gate(store: InvockStore, descriptors: DescriptorRegistry = staticDescriptors(), options: { serverId?: string; trustedApproverKeys?: TrustedApproverKeys } = {}) {
+  return new InvocationGate(compilePolicy(parsePolicyYaml(readFileSync(resolve(root, "policies/default.yaml"), "utf8"))), descriptors, store, { cwd: root, projectRoot: root, organizationDomains: ["example.com"], sessionId: "stdio-local", ...(options.serverId ? { serverId: options.serverId } : {}), principal: { principalId: "local-user", clientId: "invock-cli", scopes: ["*"] } }, { requireAuthority: true, requireIdentity: true, ...(options.trustedApproverKeys ? { trustedApproverKeys: options.trustedApproverKeys } : {}) });
+}
+
+function readTrustedApproverKeys(path: string | undefined): TrustedApproverKeys {
+  if (!path) return new Map();
+  const parsed = readJson<Record<string, unknown>>(path);
+  const keys = new Map<string, string>();
+  for (const [approverId, publicKey] of Object.entries(parsed)) {
+    if (typeof publicKey !== "string" || !publicKey.includes("PUBLIC KEY")) throw new Error(`Invalid trusted approver key: ${approverId}`);
+    keys.set(approverId, publicKey);
+  }
+  return keys;
+}
+
+function identityAuthority(values: string[]): IdentityAuthority {
+  const keyDirectory = takeOption(values, "--key-directory") ?? process.env.INVOCK_KEY_DIRECTORY ?? resolve(root, ".invock/keys");
+  return new IdentityAuthority(join(keyDirectory, "identity-state.json"));
 }
 
 async function demo(attack: boolean): Promise<void> {
@@ -121,25 +143,38 @@ function simulatePolicy(draft: PolicyDraft, observations: readonly PolicyObserva
 async function serve(values: string[]): Promise<void> {
   const strictAuthority = true;
   values = values.filter(value => value !== "--strict-authority");
-  const config = runtime(values); const store = new InvockStore(config.database, config);
+  const config = runtime(values); const trustedApproverKeys = readTrustedApproverKeys(config.trustedApproversPath); const store = new InvockStore(config.database, config);
+  const identityAuthority = new IdentityAuthority(join(store.keyDirectory, "identity-state.json"));
   if (values.length > 0 && values[0] === "--stdio") {
     values.shift(); const separator = values.indexOf("--"); const executable = separator >= 0 ? values[separator - 1] : values[0];
     if (!executable) { store.close(); throw new Error("serve --stdio requires a command"); }
     const args = separator >= 0 ? values.slice(separator + 1) : values.slice(1);
     const serverId = "stdio-upstream";
-      try { await runStdioProxy({ command: executable, args, cwd: root, serverId }, gate(store, new PersistentToolRegistry(store, serverId), { serverId })); } finally { store.close(); }
+      try { await runStdioProxy({ command: executable, args, cwd: root, serverId }, gate(store, new PersistentToolRegistry(store, serverId), { serverId, trustedApproverKeys })); } finally { store.close(); }
     return;
   }
   try {
-    const monitor = gate(store, staticDescriptors());
+    const monitor = gate(store, staticDescriptors(), { trustedApproverKeys });
     const apiLeases = new Map<string, CapabilityLease>();
     const apiLeaseSessions = new Map<string, string>();
-    const apiSessionId = newId("api-session");
+    const apiSessionId = config.sessionId ?? newId("api-session");
     const api = await startApi(store, { sessionId: apiSessionId, gate: monitor, resolveRuntime: async (input: ApiAuthorizeInput): Promise<ApiRuntimeResolution> => {
       if (strictAuthority && (!input.agent || !input.projectId || !input.sessionId || input.intentCapsule === undefined || input.authorityBinding === undefined || !input.capabilityLeases)) return { denial: { verdict: "BLOCK", reasonCodes: ["STRICT_AUTHORITY_REQUIRED"] } };
+      let identityContext: ReturnType<IdentityAuthority["executionContext"]>;
+      let identityBinding: ReturnType<IdentityAuthority["evidenceBinding"]>;
+      try {
+        if (!input.agent || !input.projectId || !input.sessionId) throw new Error("IDENTITY_BINDING_REQUIRED");
+        const now = new Date();
+        identityContext = identityAuthority.executionContext(input.agent, input.sessionId, now);
+        if (identityContext.identity.projectId !== input.projectId) throw new Error("IDENTITY_PROJECT_MISMATCH");
+        identityBinding = identityAuthority.evidenceBinding(identityContext.identity, identityContext.session, now);
+      } catch (error) {
+        const reason = error instanceof Error && /^IDENTITY_/u.test(error.message) ? error.message : "IDENTITY_BINDING_INVALID";
+        return { denial: { verdict: "BLOCK", reasonCodes: [reason] } };
+      }
       let authority: { capsule: IntentCapsule; leases: readonly CapabilityLease[]; sessionId: string } | undefined;
       if (input.intentCapsule !== undefined) {
-        try { assertCapsule(input.intentCapsule as IntentCapsule); } catch { return { denial: { verdict: "BLOCK", reasonCodes: ["MALFORMED_INTENT_CAPSULE"] } }; }
+        try { assertCapsule(input.intentCapsule as IntentCapsule, trustedApproverKeys); } catch { return { denial: { verdict: "BLOCK", reasonCodes: ["UNTRUSTED_INTENT_CAPSULE"] } }; }
         if (!input.agent) return { denial: { verdict: "BLOCK", reasonCodes: ["AGENT_REQUIRED_FOR_INTENT"] } };
         if (!input.sessionId) return { denial: { verdict: "BLOCK", reasonCodes: ["SESSION_REQUIRED_FOR_INTENT"] } };
         if (!input.capabilityLeases) return { denial: { verdict: "BLOCK", reasonCodes: ["CAPABILITY_LEASE_REQUIRED"] } };
@@ -163,7 +198,7 @@ async function serve(values: string[]): Promise<void> {
           return { denial: { verdict: "BLOCK", reasonCodes: [reason] } };
         }
       }
-      return { overrides: { ...(input.sessionId ? { sessionId: input.sessionId } : {}), ...(input.projectId ? { projectId: input.projectId } : {}), principal: { principalId: input.agent ?? "local-user", clientId: "invock-sdk", ...(input.agent ? { agentId: input.agent } : {}), scopes: ["*"] }, ...(authority ? { authority: { capsule: authority.capsule, leases: authority.leases, ...(input.authorityBinding !== undefined ? { binding: input.authorityBinding as AuthorityBinding } : {}), sessionId: authority.sessionId, request: { tool: input.tool, capabilities: [], effects: [], resources: { paths: [], domains: [], recipients: [] }, dataLabels: [] }, consume: leases => { leases.forEach(lease => apiLeases.set(lease.leaseId, lease)); } } } : {}) } };
+      return { overrides: { ...(input.sessionId ? { sessionId: input.sessionId } : {}), ...(input.projectId ? { projectId: input.projectId } : {}), principal: { principalId: input.agent ?? "local-user", clientId: "invock-sdk", ...(input.agent ? { agentId: input.agent } : {}), scopes: ["*"] }, identityAuthority, identityContext, identityBinding, ...(authority ? { authority: { capsule: authority.capsule, leases: authority.leases, ...(input.authorityBinding !== undefined ? { binding: input.authorityBinding as AuthorityBinding } : {}), sessionId: authority.sessionId, request: { tool: input.tool, capabilities: [], effects: [], resources: { paths: [], domains: [], recipients: [] }, dataLabels: [] }, consume: leases => { leases.forEach(lease => apiLeases.set(lease.leaseId, lease)); } } } : {}) } };
     } });
     console.error(`Invock dashboard: ${api.url}\nInvock dashboard token: ${api.token}\nInvock API session: ${apiSessionId}\nDatabase: ${config.database}\nKey directory: ${store.keyDirectory}\nPress Ctrl+C to stop.`);
     await new Promise<void>(resolveSignal => { process.once("SIGINT", resolveSignal); process.once("SIGTERM", resolveSignal); });
@@ -176,6 +211,40 @@ async function main(argv: string[]): Promise<number> {
   if (argv.includes("--help") || argv.includes("-h")) { help(); return 0; }
   const rest = [...initialRest];
   if (!command) { help(); return 0; }
+  if (command === "identity" && subcommand === "enroll") {
+    const values = [...rest];
+    const agentId = takeTextOption(values, "--agent");
+    const organizationId = takeTextOption(values, "--organization");
+    const projectId = takeTextOption(values, "--project");
+    const displayName = takeTextOption(values, "--display-name") ?? agentId ?? "Invock workload";
+    const runtimeType = takeTextOption(values, "--runtime-type") ?? "node";
+    const authority = identityAuthority(values);
+    if (!organizationId || !projectId || values.length > 0) throw new Error("identity enroll requires --organization and --project");
+    const result = authority.enroll({ ...(agentId ? { agentId } : {}), organizationId, projectId, displayName, runtimeType }, new Date());
+    console.log(JSON.stringify(result, null, 2));
+    return 0;
+  }
+  if (command === "identity" && subcommand === "attest") {
+    const values = [...rest];
+    const agentId = takeTextOption(values, "--agent");
+    const manifestPath = takeOption(values, "--manifest");
+    const manifest = manifestPath ? readJson<unknown>(manifestPath) : { source: "invock-cli", agentId };
+    const authority = identityAuthority(values);
+    if (!agentId || values.length > 0) throw new Error("identity attest requires --agent");
+    console.log(JSON.stringify(authority.attest(agentId, manifest, new Date()), null, 2));
+    return 0;
+  }
+  if (command === "identity" && subcommand === "session") {
+    const values = [...rest];
+    const agentId = takeTextOption(values, "--agent");
+    const projectId = takeTextOption(values, "--project");
+    const ttlText = takeTextOption(values, "--ttl") ?? "3600";
+    const ttlSeconds = Number(ttlText);
+    const authority = identityAuthority(values);
+    if (!agentId || !projectId || !Number.isSafeInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > 86_400 || values.length > 0) throw new Error("identity session requires --agent, --project, and a valid --ttl");
+    console.log(JSON.stringify(authority.openSession(agentId, projectId, ttlSeconds, new Date()), null, 2));
+    return 0;
+  }
   if (command === "init") {
     const values = [subcommand, ...rest].filter((item): item is string => item !== undefined); const path = statePath(values); const control = new LocalControlPlane(path);
     console.log(JSON.stringify({ initialized: true, statePath: path, snapshot: control.exportSnapshot() }, null, 2)); return 0;

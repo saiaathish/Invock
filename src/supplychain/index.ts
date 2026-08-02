@@ -45,12 +45,71 @@ export interface SupplyChainReport {
   reproducibleDigest: string;
 }
 
+export interface CycloneDx15Document {
+  bomFormat: "CycloneDX";
+  specVersion: "1.5";
+  serialNumber: string;
+  version: 1;
+  components: Array<{
+    type: "library";
+    "bom-ref": string;
+    name: string;
+    version: string;
+    scope: "required" | "optional" | "excluded";
+    hashes?: Array<{ alg: "SHA-512"; content: string }>;
+    properties?: Array<{ name: string; value: string }>;
+  }>;
+}
+
 export interface SupplyChainScanOptions {
   signing?: SupplyChainSigningMaterial;
   advisory?: { status: Exclude<SupplyChainReport["advisoryStatus"], "not-queried">; evidenceDigest: string };
 }
 
 function validEvidenceDigest(value: string): boolean { return /^[A-Za-z0-9_-]{43}$/.test(value); }
+
+/** Convert the internal evidence view into a CycloneDX 1.5 document for publication. */
+export function createCycloneDx15Document(sbom: SupplyChainReport["sbom"]): CycloneDx15Document {
+  const components = sbom.components.map((component, index) => {
+    const scope: CycloneDx15Document["components"][number]["scope"] = /^(?:development|peer):/u.test(component.scope) ? "optional" : "required";
+    return {
+      type: "library" as const,
+      "bom-ref": `${component.name}@${component.version}#${index}`,
+      name: component.name,
+      version: component.version,
+      scope,
+      ...(component.integrity ? { hashes: [{ alg: "SHA-512" as const, content: component.integrity.replace(/^sha512-/u, "") }] } : {}),
+      properties: [{ name: "invock:evidence-scope", value: component.scope }],
+    };
+  });
+  const document: CycloneDx15Document = { bomFormat: "CycloneDX", specVersion: "1.5", serialNumber: sbom.serialNumber, version: 1, components };
+  if (!validateCycloneDx15(document)) throw new Error("CYCLONEDX_1_5_VALIDATION_FAILED");
+  return document;
+}
+
+/** Bounded validation of every field emitted by Invock's CycloneDX 1.5 publisher. */
+export function validateCycloneDx15(value: unknown): value is CycloneDx15Document {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const source = value as Record<string, unknown>;
+  if (source.bomFormat !== "CycloneDX" || source.specVersion !== "1.5" || source.version !== 1 || typeof source.serialNumber !== "string" || !/^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(source.serialNumber) || !Array.isArray(source.components)) return false;
+  if (Object.keys(source).some(key => !["bomFormat", "specVersion", "serialNumber", "version", "components"].includes(key))) return false;
+  return source.components.every(component => {
+    if (component === null || typeof component !== "object" || Array.isArray(component)) return false;
+    const entry = component as Record<string, unknown>;
+    if (entry.type !== "library" || typeof entry["bom-ref"] !== "string" || entry["bom-ref"].length === 0 || typeof entry.name !== "string" || entry.name.length === 0 || typeof entry.version !== "string" || entry.version.length === 0 || !["required", "optional", "excluded"].includes(String(entry.scope))) return false;
+    if (entry.hashes !== undefined && (!Array.isArray(entry.hashes) || entry.hashes.some(hash => {
+      if (hash === null || typeof hash !== "object" || Array.isArray(hash)) return true;
+      const candidate = hash as Record<string, unknown>;
+      return candidate.alg !== "SHA-512" || typeof candidate.content !== "string" || candidate.content.length === 0;
+    }))) return false;
+    if (entry.properties !== undefined && (!Array.isArray(entry.properties) || entry.properties.some(property => {
+      if (property === null || typeof property !== "object" || Array.isArray(property)) return true;
+      const candidate = property as Record<string, unknown>;
+      return typeof candidate.name !== "string" || typeof candidate.value !== "string";
+    }))) return false;
+    return Object.keys(entry).every(key => ["type", "bom-ref", "name", "version", "scope", "hashes", "properties"].includes(key));
+  });
+}
 
 function deterministicSbomSerialNumber(value: unknown): string {
   const hex = Buffer.from(sha256(canonicalize(value)), "base64url").toString("hex");

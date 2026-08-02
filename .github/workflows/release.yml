@@ -117,18 +117,31 @@ jobs:
           INVOCK_CONTAINMENT_IMAGE="invock-containment-candidate:${GITHUB_SHA}" pnpm docker-containment-test 2>&1 | tee release-evidence/docker-containment.log
           pnpm release:rehearsal 2>&1 | tee release-evidence/release-rehearsal.log
           pnpm demo:certify 2>&1 | tee release-evidence/demo.log
-          node --import tsx scripts/supply-chain.ts --sign > release-evidence/supply-chain.json
           pnpm audit --prod --json > release-evidence/advisory.json
+          advisory_status="$(node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const report = JSON.parse(readFileSync('release-evidence/advisory.json', 'utf8'));
+          const vulnerabilities = report?.metadata?.vulnerabilities;
+          if (!vulnerabilities || typeof vulnerabilities !== 'object' || Array.isArray(vulnerabilities)) throw new Error('pnpm audit did not emit vulnerability metadata');
+          const counts = Object.values(vulnerabilities);
+          if (counts.some(value => typeof value !== 'number' || value !== 0)) throw new Error(`pnpm audit reported vulnerabilities: ${JSON.stringify(vulnerabilities)}`);
+          process.stdout.write('queried-no-findings');
+          NODE
+          )"
+          advisory_digest="$(node --import tsx --input-type=module -e "import { readFileSync } from 'node:fs'; import { sha256 } from './src/core/canonical.ts'; process.stdout.write(sha256(readFileSync('release-evidence/advisory.json')))" )"
+          node --import tsx scripts/supply-chain.ts --sign --advisory-status "$advisory_status" --advisory-evidence "$advisory_digest" --cyclonedx-out release-evidence/sbom.cdx.json > release-evidence/supply-chain.json
           test_count="$(awk '/^# tests [0-9]+$/ { count=$3 } END { print count }' release-evidence/test.log)"
           [[ "$test_count" =~ ^[1-9][0-9]*$ ]] || { echo "Complete TAP test count missing" >&2; exit 1; }
           pnpm claim-consistency -- --test-count "$test_count" --final-verdict NOT_READY 2>&1 | tee release-evidence/claim-consistency.log
-          node --input-type=module <<'NODE'
-          import { readFileSync, writeFileSync } from 'node:fs';
+          node --import tsx --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          import { createCycloneDx15Document, validateCycloneDx15, verifySupplyChainSignature } from './src/supplychain.ts';
           const report = JSON.parse(readFileSync('release-evidence/supply-chain.json', 'utf8'));
-          if (report.sbom?.bomFormat !== 'CycloneDX' || !report.sbom || report.signatureStatus !== 'verified') {
+          const document = JSON.parse(readFileSync('release-evidence/sbom.cdx.json', 'utf8'));
+          if (report.sbom?.bomFormat !== 'CycloneDX' || !report.sbom || report.signatureStatus !== 'verified' || report.advisoryStatus !== 'queried-no-findings' || typeof report.advisoryEvidenceDigest !== 'string' || !verifySupplyChainSignature(report)) {
             throw new Error('Verified CycloneDX supply-chain evidence is incomplete');
           }
-          writeFileSync('release-evidence/sbom.cdx.json', JSON.stringify(report.sbom, null, 2) + '\n');
+          if (!validateCycloneDx15(document) || JSON.stringify(document) !== JSON.stringify(createCycloneDx15Document(report.sbom))) throw new Error('CycloneDX 1.5 document does not match the signed report');
           NODE
 
       - name: Upload immutable release candidate
@@ -168,8 +181,20 @@ jobs:
           set -euo pipefail
           [[ "$(awk -F= '$1 == "release_commit" { print $2 }' release-evidence/release-ref.txt)" == "$GITHUB_SHA" ]] || { echo "Candidate commit mismatch" >&2; exit 1; }
           sha256sum --check release-evidence/candidate-image-sha256.txt
-          node -e "const r=JSON.parse(require('fs').readFileSync('release-evidence/supply-chain.json','utf8')); if(r.sbom?.bomFormat!=='CycloneDX'||!r.sbom||r.signatureStatus!=='verified') throw new Error('invalid signed supply-chain evidence')"
-          node -e "JSON.parse(require('fs').readFileSync('release-evidence/sbom.cdx.json','utf8'))"
+          node --import tsx --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          import { createHash, createPublicKey, verify } from 'node:crypto';
+          const canonicalize = value => value === null ? 'null' : typeof value === 'string' ? JSON.stringify(value) : typeof value === 'boolean' ? (value ? 'true' : 'false') : typeof value === 'number' ? JSON.stringify(value) : Array.isArray(value) ? `[${value.map(canonicalize).join(',')}]` : `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalize(value[key])}`).join(',')}}`;
+          const sha256 = value => createHash('sha256').update(value).digest('base64url');
+          const signingPayload = report => ({ domain: 'invock-supply-chain-report-signature-v1', schemaVersion: report.schemaVersion, root: report.root, evidenceFiles: report.evidenceFiles, dependencies: report.dependencies, resolvedDependencies: report.resolvedDependencies, resolutionStatus: report.resolutionStatus, resolutionCompleteness: report.resolutionCompleteness, dependencyEdges: report.dependencyEdges, importerSnapshots: report.importerSnapshots, lockfileMetadata: report.lockfileMetadata, sbom: report.sbom, containerReferences: report.containerReferences, lockfileStatus: report.lockfileStatus, advisoryStatus: report.advisoryStatus, ...(report.advisoryEvidenceDigest ? { advisoryEvidenceDigest: report.advisoryEvidenceDigest } : {}), signatureStatus: report.signatureStatus, claims: report.claims, reproducibleDigest: report.reproducibleDigest });
+          function verifySupplyChainSignature(report) { const signature = report.signature; if (!signature || signature.algorithm !== 'Ed25519' || signature.trust !== 'self-generated-local-evidence' || signature.keyId !== sha256(signature.publicKeyPem) || signature.signedDigest !== sha256(canonicalize(signingPayload(report)))) return false; try { return verify(null, Buffer.from(canonicalize(signingPayload(report))), createPublicKey(signature.publicKeyPem), Buffer.from(signature.signature, 'base64url')); } catch { return false; } }
+          function createCycloneDx15Document(sbom) { return { bomFormat: 'CycloneDX', specVersion: '1.5', serialNumber: sbom.serialNumber, version: 1, components: sbom.components.map((component, index) => ({ type: 'library', 'bom-ref': `${component.name}@${component.version}#${index}`, name: component.name, version: component.version, scope: /^(?:development|peer):/.test(component.scope) ? 'optional' : 'required', ...(component.integrity ? { hashes: [{ alg: 'SHA-512', content: component.integrity.replace(/^sha512-/u, '') }] } : {}), properties: [{ name: 'invock:evidence-scope', value: component.scope }] })) }; }
+          function validateCycloneDx15(value) { return value && value.bomFormat === 'CycloneDX' && value.specVersion === '1.5' && value.version === 1 && /^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value.serialNumber) && Array.isArray(value.components) && value.components.every(component => component && component.type === 'library' && typeof component['bom-ref'] === 'string' && typeof component.name === 'string' && typeof component.version === 'string' && ['required', 'optional', 'excluded'].includes(component.scope)); }
+          const report = JSON.parse(readFileSync('release-evidence/supply-chain.json', 'utf8'));
+          const document = JSON.parse(readFileSync('release-evidence/sbom.cdx.json', 'utf8'));
+          if (report.sbom?.bomFormat !== 'CycloneDX' || !report.sbom || report.signatureStatus !== 'verified' || report.advisoryStatus !== 'queried-no-findings' || typeof report.advisoryEvidenceDigest !== 'string' || !verifySupplyChainSignature(report)) throw new Error('invalid signed supply-chain evidence');
+          if (!validateCycloneDx15(document) || JSON.stringify(document) !== JSON.stringify(createCycloneDx15Document(report.sbom))) throw new Error('invalid or mismatched CycloneDX 1.5 document');
+          NODE
           docker load --input invock-containment.tar
           docker image inspect "invock-containment-candidate:${GITHUB_SHA}" > /dev/null
 
@@ -207,7 +232,11 @@ jobs:
             "lockfile": "pnpm-lock.yaml"
           }
           JSON
-          find release-evidence -type f ! -name final-sha256sums.txt -print0 | sort -z | xargs -0 sha256sum > release-evidence/final-sha256sums.txt
+          (
+            cd release-evidence
+            find . -type f ! -name final-sha256sums.txt -printf '%P\0' | sort -z | xargs -0 sha256sum > final-sha256sums.txt
+            sha256sum --check final-sha256sums.txt
+          )
 
       - name: Upload final release evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

@@ -1,6 +1,6 @@
 import { request as httpRequest, type IncomingMessage, type RequestOptions } from "node:http";
 import { request as httpsRequest } from "node:https";
-import { isJsonRpcResponse, type JsonRpcMessage, type JsonRpcResponse } from "./protocol.js";
+import { isJsonRpcResponse, negotiateEra, type JsonRpcMessage, type JsonRpcResponse } from "./protocol.js";
 
 export interface RedirectPolicy {
   maxRedirects: number;
@@ -37,6 +37,11 @@ const DEFAULT_MAX_REDIRECTS = 5;
 const REDIRECT_SENSITIVE_HEADERS = /^(authorization|cookie|proxy-authorization|mcp-session-id|x-api-key|x-auth-token|x-access-token)$/iu;
 const MAX_SSE_BUFFER_BYTES = 2 * 1024 * 1024;
 
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.replace(/^\[|\]$/gu, "").toLowerCase();
+  return normalized === "localhost" || normalized === "::1" || normalized.startsWith("127.");
+}
+
 export class StreamableHttpUpstreamClient {
   private readonly baseUrl: URL;
   private readonly redirectPolicy: RedirectPolicy;
@@ -53,6 +58,7 @@ export class StreamableHttpUpstreamClient {
 
   constructor(options: StreamableHttpUpstreamOptions) {
     this.baseUrl = new URL(options.url);
+    this.assertTargetSecurity(this.baseUrl, options.dnsPinner);
     this.redirectPolicy = options.redirectPolicy ?? { maxRedirects: DEFAULT_MAX_REDIRECTS, allowCrossHost: false };
     this.dnsPinner = options.dnsPinner;
     this.connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
@@ -87,6 +93,11 @@ export class StreamableHttpUpstreamClient {
     const result = response.result as Record<string, unknown>;
     if (typeof result.protocolVersion !== "string") {
       throw new Error("UPSTREAM_INITIALIZE_NO_PROTOCOL");
+    }
+    try {
+      negotiateEra(result.protocolVersion);
+    } catch {
+      throw new Error(`UPSTREAM_INITIALIZE_UNSUPPORTED_PROTOCOL:${result.protocolVersion}`);
     }
     this.protocolVersion = result.protocolVersion;
     if (this.sessionId === undefined) {
@@ -351,6 +362,7 @@ export class StreamableHttpUpstreamClient {
     signal: AbortSignal,
     redirectCount: number,
   ): Promise<IncomingMessage> {
+    this.assertTargetSecurity(url, this.dnsPinner);
     if (redirectCount > this.redirectPolicy.maxRedirects) {
       throw new Error("UPSTREAM_TOO_MANY_REDIRECTS");
     }
@@ -448,5 +460,13 @@ export class StreamableHttpUpstreamClient {
     clearTimeout(connectTimer);
     clearTimeout(headerTimer);
     return response;
+  }
+
+  private assertTargetSecurity(url: URL, dnsPinner: DnsPinner | undefined): void {
+    if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("UPSTREAM_PROTOCOL_UNSUPPORTED");
+    if (!isLoopbackHostname(url.hostname)) {
+      if (url.protocol !== "https:") throw new Error("UPSTREAM_REMOTE_HTTPS_REQUIRED");
+      if (dnsPinner === undefined) throw new Error("UPSTREAM_REMOTE_DNS_PIN_REQUIRED");
+    }
   }
 }

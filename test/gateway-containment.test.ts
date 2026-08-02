@@ -143,6 +143,32 @@ test("strict gates accept only a signed run bound to the exact invocation", asyn
   }
 });
 
+test("strict gates reject a completed containment run whose cleanup failed", async () => {
+  const value = fixture();
+  try {
+    const outcome = await value.gate.authorizeInvocation(request(7));
+    assert.equal(outcome.kind, "forward");
+    if (outcome.kind !== "forward") return;
+    const profileDigest = digestJson({ sandbox: "required", network: "none", readOnlyRoot: true, nonRoot: true, noNewPrivileges: true });
+    const record = signContainmentRun({
+      schemaVersion: "invock/containment-run/v2",
+      runId: "cleanup-failed-run",
+      createdAt: "2026-08-01T00:00:00.000Z",
+      requestDigest: digestJson({ command: "probe.js", argv: [] }),
+      authorizedRequestDigest: outcome.envelope.integrity.requestDigest,
+      command: "probe.js",
+      invocationId: outcome.envelope.invocationId,
+      sessionId: outcome.envelope.sessionId,
+      profileDigest,
+      result: { status: "completed", stdout: "ok", stderr: "cleanup failed", durationMs: 1, reasonCodes: ["CONTAINER_CLEANUP_FAILED"], cleanup: "failed", capabilities: { sandbox: "available", network: "denied", readOnlyRoot: true, nonRoot: true, noNewPrivileges: true } },
+    }, generateSigningMaterial());
+    assert.throws(() => value.gate.attachContainmentRun(outcome, record), /CONTAINMENT_RUN_BINDING_INVALID/u);
+  } finally {
+    value.store.close();
+    rmSync(value.directory, { recursive: true, force: true });
+  }
+});
+
 test("production containment trust rejects self-signed and capability-mismatched proofs", async () => {
   const value = fixture();
   try {

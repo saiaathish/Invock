@@ -67,7 +67,10 @@ export class InvocationGate {
   constructor(private readonly policy: CompiledPolicy, private readonly descriptors: DescriptorRegistry, private readonly store: InvockStore, private readonly contextBase: Omit<NormalizationContext, "lineage" | "schemaDigest" | "descriptorDigest" | "policyVersionId">, options: InvocationGateOptions = {}) {
     const testEscape = options.allowUnboundForTests === true && process.env.INVOCK_TEST_MODE === "1";
     this.testEscape = testEscape;
-    this.options = { ...options, requireAuthority: testEscape ? false : true, requireIdentity: testEscape ? false : options.requireIdentity === true, requireContainment: testEscape ? options.requireContainment === true : options.requireContainment !== false };
+    // Production gates are always containment-required. The only uncontained
+    // fixture path is explicit, test-mode-only, and therefore cannot be
+    // enabled by a production caller passing `requireContainment: false`.
+    this.options = { ...options, requireAuthority: testEscape ? false : true, requireIdentity: testEscape ? false : true, requireContainment: testEscape ? options.requireContainment === true : true };
   }
 
   /** Canonical, non-bypassable authorization entry point for every supported tools/call. */
@@ -118,6 +121,7 @@ export class InvocationGate {
       if (this.descriptors.isQuarantined?.(request.params.name)) throw new Error("TOOL_QUARANTINED");
       if (this.options.requireAuthority && !runtimeBase.authority) throw new Error("STRICT_AUTHORITY_REQUIRED");
       if (this.options.requireIdentity && !runtimeBase.identityBinding) throw new Error("IDENTITY_BINDING_REQUIRED");
+      if (!this.testEscape && this.options.requireAuthority && (!runtimeBase.authority?.capsule.authorityBinding || !runtimeBase.authority.capsule.humanActivation)) throw new Error("BOUND_HUMAN_AUTHORITY_REQUIRED");
       envelope = await normalizeInvocation(request, descriptor, context);
       decision = evaluatePolicy(this.policy, envelope, now);
       if (runtimeBase.authority) {
@@ -217,7 +221,7 @@ export class InvocationGate {
     if (forwarded.kind !== "forward") throw new Error("CONTAINMENT_FORWARD_REQUIRED");
     const trusted = this.testEscape ? undefined : this.options.trustedContainmentKeys;
     if (!verifyContainmentRun(record, trusted)) throw new Error("CONTAINMENT_SIGNER_UNTRUSTED");
-    if (record.result.status !== "completed" || record.invocationId !== forwarded.envelope.invocationId || record.sessionId !== forwarded.envelope.sessionId || record.authorizedRequestDigest !== forwarded.envelope.integrity.requestDigest || record.profileDigest === undefined) throw new Error("CONTAINMENT_RUN_BINDING_INVALID");
+    if (record.result.status !== "completed" || record.result.cleanup !== "completed" || record.invocationId !== forwarded.envelope.invocationId || record.sessionId !== forwarded.envelope.sessionId || record.authorizedRequestDigest !== forwarded.envelope.integrity.requestDigest || record.profileDigest === undefined) throw new Error("CONTAINMENT_RUN_BINDING_INVALID");
     if (!this.testEscape) {
       const approved = this.options.approvedContainmentProfiles?.find(profile => profile.profileDigest === record.profileDigest);
       if (!approved) throw new Error("CONTAINMENT_PROFILE_UNAPPROVED");

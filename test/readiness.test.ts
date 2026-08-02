@@ -134,6 +134,39 @@ test("HTTP rejects duplicate request ids, mismatched replies, and unsupported pr
   } finally { sse.close(); await sse.done.catch(() => undefined); await gateway.close(); fixtureValue.close(); }
 });
 
+test("HTTP initialize binds the body, header, upstream selection, and session profile", async () => {
+  const fixtureValue = fixture(); let forwards = 0;
+  const gateway = await startStreamableHttpGateway(fixtureValue.gate, {
+    token: "test-token",
+    forward: async request => {
+      forwards += 1;
+      if ("method" in request && request.method === "initialize") return { jsonrpc: "2.0", id: "id" in request ? request.id ?? null : null, result: { protocolVersion: "2025-11-25", capabilities: {}, serverInfo: { name: "fixture", version: "1" } } };
+      return { jsonrpc: "2.0", id: "id" in request ? request.id ?? null : null, result: { content: [{ type: "text", text: "ok" }] } };
+    },
+  });
+  try {
+    const initialize = (id: number, version: string) => ({ jsonrpc: "2.0", id, method: "initialize", params: { protocolVersion: version, capabilities: {}, clientInfo: { name: "test", version: "1" } } });
+    assert.equal((await httpCall(gateway.url, gateway.token, initialize(1, "2026-07-28"), { "mcp-protocol-version": "2025-11-25" })).status, 400);
+    assert.equal((await httpCall(gateway.url, gateway.token, initialize(2, "2026-07-28"))).status, 400);
+    assert.equal((await httpCall(gateway.url, gateway.token, initialize(3, "2025-11-25"), { "mcp-protocol-version": "2025-11-25", "mcp-session-id": "protocol-session" })).status, 200);
+    assert.equal((await httpCall(gateway.url, gateway.token, call(4, "read", { path: "safe.txt" }), { "mcp-session-id": "protocol-session" })).status, 200);
+    assert.equal((await httpCall(gateway.url, gateway.token, call(5, "read", { path: "safe.txt" }), { "mcp-session-id": "protocol-session", "mcp-protocol-version": "2025-06-18" })).status, 400);
+    assert.equal(forwards, 2);
+  } finally { await gateway.close(); fixtureValue.close(); }
+});
+
+test("HTTP initialize rejects an upstream-selected protocol version that differs from the request", async () => {
+  const fixtureValue = fixture();
+  const gateway = await startStreamableHttpGateway(fixtureValue.gate, {
+    token: "test-token",
+    forward: async request => ({ jsonrpc: "2.0", id: "id" in request ? request.id ?? null : null, result: "method" in request && request.method === "initialize" ? { protocolVersion: "2025-06-18" } : { content: [{ type: "text", text: "ok" }] } }),
+  });
+  try {
+    const response = await httpCall(gateway.url, gateway.token, { jsonrpc: "2.0", id: 6, method: "initialize", params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "test", version: "1" } } }, { "mcp-protocol-version": "2025-11-25", "mcp-session-id": "mismatched-upstream" });
+    assert.equal(response.status, 502);
+  } finally { await gateway.close(); fixtureValue.close(); }
+});
+
 test("HTTP rejects wrong upstream response ids and cleans timed-out correlation state", async () => {
   const fixtureValue = fixture();
   let mode: "wrong" | "timeout" | "ok" = "wrong";
@@ -399,16 +432,17 @@ test("future database schema refuses opening before migrations alter it", () => 
 test("stdio mediates notifications and keeps diagnostics out of protocol stdout", async () => {
   const fixtureValue = fixture(); const input = new PassThrough(); const output = new PassThrough(); const diagnostics = new PassThrough(); let stdout = ""; let stderr = "";
   output.on("data", chunk => { stdout += String(chunk); }); diagnostics.on("data", chunk => { stderr += String(chunk); });
-  const upstream = `let b='';process.stdin.on('data',c=>{b+=c;let i;while((i=b.indexOf('\\n'))>=0){let line=b.slice(0,i);b=b.slice(i+1);if(!line)continue;let m=JSON.parse(line);if(m.id!==undefined)process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{content:[{type:'text',text:'ok'}]}})+'\\n')}})`;
+  const upstream = `let b='';process.stdin.on('data',c=>{b+=c;let i;while((i=b.indexOf('\\n'))>=0){let line=b.slice(0,i);b=b.slice(i+1);if(!line)continue;let m=JSON.parse(line);if(m.method==='initialize')process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{protocolVersion:'2025-11-25',capabilities:{},serverInfo:{name:'fixture',version:'1'}}})+'\\n');else if(m.id!==undefined)process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{content:[{type:'text',text:'ok'}]}})+'\\n')}})`;
   const running = runStdioProxy({ command: process.execPath, args: ["-e", upstream], cwd: fixtureValue.directory }, fixtureValue.gate, { stdin: input, stdout: output, stderr: diagnostics });
   try {
+    input.write(`${JSON.stringify({ jsonrpc: "2.0", id: 99, method: "initialize", params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "test", version: "1" } } })}\n`);
     input.write(`${JSON.stringify(call(undefined, "read", { path: "safe.txt" }))}\n`);
     input.write(`${JSON.stringify(call(undefined, "read", { path: ".env" }))}\n`);
     input.write(`${JSON.stringify(call(1, "read", { path: ".env" }))}\n`);
     await new Promise(resolve => setTimeout(resolve, 80)); input.end();
     await running;
     const lines = stdout.trim().split("\n").filter(Boolean);
-    assert.equal(lines.length, 1); assert.equal(JSON.parse(lines[0]!).result.structuredContent.verdict, "BLOCK");
+    assert.equal(lines.filter(line => JSON.parse(line).id === 1).length, 1); assert.equal(JSON.parse(lines.find(line => JSON.parse(line).id === 1)!).result.structuredContent.verdict, "BLOCK");
     assert.doesNotThrow(() => lines.forEach(line => JSON.parse(line)));
     assert.equal(stderr.includes("Invock blocked"), false);
   } finally { fixtureValue.close(); }

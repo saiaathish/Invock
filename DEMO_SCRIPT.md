@@ -7,7 +7,7 @@ This script is a design for a truthful judge mode. It uses only local processes,
 - Node `>=22.5.0` and the repository's installed pnpm dependencies: `IMPLEMENTED` prerequisite from `package.json`.
 - Clean checkout or a recorded revision: required for reproducibility.
 - `pnpm build`: `IMPLEMENTED`, executed for this handoff with exit 0.
-- `pnpm test`: `IMPLEMENTED`, executed for this handoff with 283 passed, 0 failed, 0 skipped.
+- `pnpm test`: `IMPLEMENTED`, executed for this handoff with 291 passed, 0 failed, 0 skipped.
 - `pnpm judge:certify`: `IMPLEMENTED` automated fake-data flow; it reports safe ALLOW, blocked attack, signed evidence, cleanup, and an honest `degraded` containment/browser status.
 
 Use these fake values only: `FAKE_SECRET_123`, `http://127.0.0.1:<local-port>/sink`, and a disposable local database path. Never paste a real token into the terminal or dashboard.

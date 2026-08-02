@@ -1,6 +1,6 @@
 {
   "name": "invock",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "description": "Deterministic MCP tool-invocation reference monitor",
   "type": "module",
@@ -23,7 +23,7 @@
     "demo:certify": "node --import tsx scripts/demo.ts",
     "judge": "node --import tsx scripts/judge.ts",
     "judge:certify": "node --import tsx scripts/judge.ts --automated",
-    "arena": "node --import tsx scripts/arena/run.ts",
+    "arena": "INVOCK_TEST_MODE=1 node --import tsx scripts/arena/run.ts",
     "supply-chain": "node --import tsx scripts/supply-chain.ts",
     "forge": "node --import tsx src/cli.ts forge",
     "guard": "node --import tsx src/cli.ts guard",

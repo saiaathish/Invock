@@ -1,12 +1,14 @@
 # Invock Hackathon Readiness Audit
 
-> SUPERSEDED HISTORICAL ARTIFACT. This audit predates the current security hardening and is not a current product verdict. Its findings are preserved for traceability; consult `CURRENT_STATE_AUDIT.md` and `FINAL_PRODUCT_CERTIFICATION.md` for the current evidence boundary.
+> SUPERSEDED HISTORICAL ARTIFACT — DO NOT USE AS CURRENT EVIDENCE. This file preserves a dated pre-hardening audit snapshot for traceability only. The statements below describe the filesystem and test inventory observed by that audit; they are not claims about the current checkout, current HEAD, current test count, or current security behavior. Consult `CURRENT_STATE_AUDIT.md` and `FINAL_PRODUCT_CERTIFICATION.md` for the current evidence boundary.
+
+> **Current-tree fact check:** the live checkout and exact commit are intentionally not duplicated in this archived report because they change. Run `git rev-parse HEAD`, `git status --short --branch`, and `pnpm test` from the repository root before using any present-tense product or release claim.
 
 ## 1. Final Verdict
 
 **NOT READY**
 
-This is an independent, no-repair audit. The repository builds and its supplied seven tests pass, but two confirmed authorization bypasses violate the project’s core reference-monitor claim: a JSON-RPC `tools/call` notification is forwarded without authorization in both supported transports, and declared tool descriptors silently ignore unlisted arguments while the original request is forwarded upstream. The documented full demo is also not runnable from the documented commands. These are P0/P1 blockers.
+At the time of this independent, no-repair snapshot, the audit recorded that the supplied seven tests passed and that two authorization bypasses appeared to violate the then-current reference-monitor claim: a JSON-RPC `tools/call` notification was reported as forwarded without authorization in both supported transports, and declared tool descriptors were reported to ignore unlisted arguments while forwarding the original request upstream. The documented full demo was also reported as not runnable from the documented commands. These are historical P0/P1 findings, not a current-tree verdict.
 
 ## 2. Executive Summary
 
@@ -23,7 +25,7 @@ No real credentials or external services were used. This report is the sole audi
 | Item | Evidence | Result |
 |---|---|---|
 | Working directory | `/Users/saiaathishkarthik/Desktop/Invock` | Observed |
-| Git root / branch / commit | `git rev-parse`, `git branch`, `git log`, and `git status` all reported `fatal: not a git repository` | **Unavailable** |
+| Git root / branch / commit | The audit environment reported `fatal: not a git repository` for `git rev-parse`, `git branch`, `git log`, and `git status` | **Unavailable in that historical audit environment** |
 | Initial working tree | Cannot be established without `.git`; pre-audit file inventory was recorded by the environment | Not independently provable |
 | Node | `v22.23.1` | Meets `>=22.5.0` |
 | Corepack | `0.35.0` | Observed |
@@ -33,7 +35,7 @@ No real credentials or external services were used. This report is the sole audi
 | Package pinning | `yaml`, `tsx`, TypeScript, and Node types use exact versions in `package.json` | Positive |
 | Protocol SDK pinning | No MCP SDK dependency is present; transport is hand-written | Claim cannot be evaluated as SDK pinning |
 
-The current folder is not a Git checkout. Consequently, commit provenance, history secret scan, tracked/untracked separation, and final `git status --short` cannot be reported. This is a submission-packaging concern, not a source-code repair performed by this audit.
+The historical audit environment reported that its folder was not a Git checkout. Consequently, that audit could not report commit provenance, history secret scan, tracked/untracked separation, or final `git status --short`. This was a snapshot-environment limitation, not a statement about the current checkout and not a source-code repair performed by that audit.
 
 ## 4. Claimed Scope
 
@@ -55,7 +57,7 @@ The user-facing scope was extracted from `README.md`, `IMPLEMENTATION_STATUS.md`
 | Function | Evidence | Verdict |
 |---|---|---|
 | TypeScript compilation | `pnpm typecheck` exit 0 | VERIFIED |
-| Unit/API test runner | `pnpm test`: 7 passed, 0 failed, 0 skipped | VERIFIED (narrow) |
+| Unit/API test runner | The historical snapshot recorded `pnpm test`: 7 passed, 0 failed, 0 skipped | VERIFIED for that snapshot only |
 | Production build | `pnpm build` exit 0 | VERIFIED |
 | Certification command execution | `pnpm certify` exited 0 and runs typecheck, test, build, then `dist/scripts/certify.js` | PARTIALLY VERIFIED |
 | Direct protected-path gate denial | `test/security.test.ts:42-44` | VERIFIED (engine level) |
@@ -215,7 +217,7 @@ These are in-memory `InvocationGate` calls (`cli.ts:28-33`), not a real MCP clie
 
 ## 18. Test Quality Audit
 
-All seven tests use real Node SQLite and real local HTTP server instances where applicable, but coverage is shallow and most critical supported-transport properties are untested.
+The historical seven-test snapshot used real Node SQLite and real local HTTP server instances where applicable, but coverage was shallow and most critical supported-transport properties were untested at that time.
 
 | Mutation / failure | Existing detection | Assessment |
 |---|---|---|
@@ -328,7 +330,7 @@ The following are correctly documented as not completed and were not independent
 ## 25. Commands Executed
 
 ```text
-pwd; git rev-parse/branch/HEAD/status/diff/log probes (all Git probes failed: no .git)
+pwd; git rev-parse/branch/HEAD/status/diff/log probes (all Git probes failed in the historical audit environment: no `.git` there)
 node --version; corepack --version; pnpm --version
 pnpm install --frozen-lockfile --offline
 pnpm typecheck
@@ -352,4 +354,4 @@ The temporary-copy clean-install attempt was terminated after stalling. It is re
 
 ## 27. Final Working-Tree State
 
-Git status cannot be obtained because this directory is not a Git repository. Audit-created tracked-source change: **only this report, `HACKATHON_READINESS_AUDIT.md`**. Generated `dist/` and `node_modules/` pre-existed/are ignored by project conventions; temporary `.invock` and `/tmp` audit artifacts were removed. Final package/document hashes should be rechecked by the submitter after adding this report to a real Git repository.
+In the historical audit environment, Git status could not be obtained because that directory was not a Git repository. The audit-created source artifact was **only this report, `HACKATHON_READINESS_AUDIT.md`**. Generated `dist/` and `node_modules/` were treated as pre-existing/ignored by that snapshot; temporary `.invock` and `/tmp` audit artifacts were removed. Final package/document hashes were explicitly left for a later real-checkout verification.

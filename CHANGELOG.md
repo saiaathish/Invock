@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.6 — 2026-08-02
+
+- Hardened authority, identity/session binding, containment proof cleanup, protocol negotiation, upstream HTTPS/DNS pinning, and release-evidence verification.
+- Added Python SDK interoperability coverage and current release-provenance/SBOM validation.
+
 ## Unreleased — 2026-08-01
 
 - Added authenticated `/api/v1/authorize` routing through the canonical gate.

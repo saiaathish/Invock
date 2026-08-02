@@ -23,7 +23,7 @@ rules:
     when: { uncertainty: { empty: true } }
 `));
 
-function makeBoundAuthority(directory: string): { gate: InvocationGate; store: InvockStore; capsule: IntentCapsule; binding: ReturnType<typeof createAuthorityBinding>; lease: ReturnType<typeof issueCapabilityLease>; trustedApproverKeys: Map<string, string>; identityAuthority: IdentityAuthority; identityContext: { identity: ReturnType<IdentityAuthority["enroll"]>["identity"]; session: ReturnType<IdentityAuthority["openSession"]> }; identityBinding: ReturnType<IdentityAuthority["evidenceBinding"]> } {
+function makeBoundAuthority(directory: string, allowUnboundForTests = false): { gate: InvocationGate; store: InvockStore; capsule: IntentCapsule; binding: ReturnType<typeof createAuthorityBinding>; lease: ReturnType<typeof issueCapabilityLease>; trustedApproverKeys: Map<string, string>; identityAuthority: IdentityAuthority; identityContext: { identity: ReturnType<IdentityAuthority["enroll"]>["identity"]; session: ReturnType<IdentityAuthority["openSession"]> }; identityBinding: ReturnType<IdentityAuthority["evidenceBinding"]> } {
   const registry = new StaticDescriptorRegistry({ read: descriptor });
   const identityAuthority = new IdentityAuthority();
   const enrolled = identityAuthority.enroll({ organizationId: "org-1", projectId: "project-1", displayName: "agent-1", runtimeType: "test", agentId: "agent-1" }, now);
@@ -38,13 +38,13 @@ function makeBoundAuthority(directory: string): { gate: InvocationGate; store: I
   const lease = issueCapabilityLease({ issuer: "capsule", subject: binding.agentId, capabilities: ["fs.read"], constraints: { tools: ["read"], effects: ["data.observe"], resources: { paths: [join(directory, "safe.txt")], domains: [], recipients: [] }, data: { allowedLabels: ["public", "internal"], forbiddenLabels: ["secret"] } }, remainingCalls: 1, issuedAt: now.toISOString(), expiresAt: "2027-12-01T00:00:00.000Z", authorityBinding: binding }, capsule, undefined, now, trustedApproverKeys);
   const store = new InvockStore(":memory:");
   const identityBinding = identityAuthority.evidenceBinding(attested.identity, session, now);
-  const gate = new InvocationGate(policy, registry, store, { cwd: directory, projectRoot: directory, organizationDomains: [], sessionId: session.id, principal: { principalId: binding.agentId, agentId: binding.agentId, clientId: "test", scopes: ["*"] }, now: () => now }, { trustedApproverKeys, requireContainment: false });
+  const gate = new InvocationGate(policy, registry, store, { cwd: directory, projectRoot: directory, organizationDomains: [], sessionId: session.id, principal: { principalId: binding.agentId, agentId: binding.agentId, clientId: "test", scopes: ["*"] }, now: () => now }, { trustedApproverKeys, ...(allowUnboundForTests ? { allowUnboundForTests: true } : {}), requireContainment: false });
   return { gate, store, capsule, binding, lease, trustedApproverKeys, identityAuthority, identityContext: { identity: attested.identity, session }, identityBinding };
 }
 
 test("signed human activation and runtime context binding reach the receipt", async () => {
   const directory = mkdtempSync(join(tmpdir(), "invock-bound-authority-"));
-  const { gate, store, capsule, binding, lease, identityAuthority, identityContext, identityBinding } = makeBoundAuthority(directory);
+  const { gate, store, capsule, binding, lease, identityAuthority, identityContext, identityBinding } = makeBoundAuthority(directory, true);
   try {
     const outcome = await gate.authorizeInvocation({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "read", arguments: { path: "safe.txt" } } }, { projectId: binding.projectId, identityAuthority, identityContext, identityBinding, authority: { binding, capsule, leases: [lease], request: { tool: "read", capabilities: [], effects: [] } } });
     assert.equal(outcome.kind, "forward");

@@ -323,6 +323,23 @@ test("upstream client: initialize handshake and request/response correlation", a
   }
 });
 
+test("upstream client rejects an unsupported initialize protocol version", async () => {
+  const mock = createServer((req, res) => {
+    req.resume();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: "2999-01-01", capabilities: {}, serverInfo: { name: "mock", version: "1.0.0" } } }));
+  });
+  const port = await listen(mock);
+  const client = new StreamableHttpUpstreamClient({ url: `http://127.0.0.1:${port}/mcp`, requestTimeoutMs: 2_000 });
+  try {
+    await assert.rejects(client.initialize(), /UPSTREAM_INITIALIZE_UNSUPPORTED_PROTOCOL:2999-01-01/u);
+    assert.equal(client.protocol, undefined);
+  } finally {
+    client.close();
+    await closeServer(mock);
+  }
+});
+
 test("upstream client: id mismatch rejection", async () => {
   const mock = createServer((req, res) => {
     req.resume();
@@ -634,6 +651,13 @@ test("upstream client: dns pinner hook", async () => {
     client.close();
     await closeServer(mock);
   }
+});
+
+test("upstream client requires HTTPS and DNS pinning for remote targets", () => {
+  assert.throws(() => new StreamableHttpUpstreamClient({ url: "http://service.example/mcp" }), /UPSTREAM_REMOTE_HTTPS_REQUIRED/u);
+  assert.throws(() => new StreamableHttpUpstreamClient({ url: "https://service.example/mcp" }), /UPSTREAM_REMOTE_DNS_PIN_REQUIRED/u);
+  const client = new StreamableHttpUpstreamClient({ url: "https://service.example/mcp", dnsPinner: { async pin() { return { addresses: ["203.0.113.10"] }; } } });
+  client.close();
 });
 
 test("gateway with upstream client forwards via Streamable HTTP", async () => {
