@@ -33,6 +33,12 @@ and therefore certifies the Docker path. It never pulls an image or treats a
 tag alone as evidence. If the image is absent, certification uses the
 available runtime as `unsupported` and leaves all enforcement booleans false.
 
+Release CI may set `INVOCK_CONTAINMENT_IMAGE` to an already-built candidate
+tag. In that mode the probe does not rebuild the image: it reads that exact
+candidate's immutable local image ID and uses the same image for both the
+direct Docker attack and the product `runContained` probe. This binds the
+containment evidence to the release candidate rather than to a second build.
+
 If the requested runtime is unavailable, the result is `unsupported` with
 `sandbox: "unavailable"`, `network: "unknown"`, and all enforcement booleans
 false. There is no direct-process fallback for a required profile.

@@ -43,6 +43,7 @@ test("Docker and final certification commands have hard time bounds", () => {
   assert.match(docker, /timeout: VERSION_TIMEOUT_MS/u);
   assert.match(docker, /timeout: BUILD_TIMEOUT_MS/u);
   assert.match(docker, /timeout: ATTACK_TIMEOUT_MS/u);
+  assert.match(docker, /INVOCK_CONTAINMENT_IMAGE/u);
   assert.match(expanded, /timeout: 180_000/u);
   assert.match(final, /timeout: 180_000/u);
 });
@@ -61,6 +62,8 @@ test("the authoritative gate invokes a supported protocol command and derives se
   assert.match(release, /actions\/download-artifact@[0-9a-f]{40}/u);
   assert.match(release, /actions\/attest-sbom@[0-9a-f]{40}/u);
   assert.match(release, /node --import tsx scripts\/supply-chain\.ts --sign > release-evidence\/supply-chain\.json/u);
+  assert.match(release, /report\.sbom\?\.bomFormat/u);
+  assert.match(release, /INVOCK_CONTAINMENT_IMAGE="invock-containment-candidate:\$\{GITHUB_SHA\}"/u);
   const publish = release.slice(release.indexOf("  publish:"));
   assert.doesNotMatch(publish, /actions\/checkout@/u);
 });

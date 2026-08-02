@@ -54,42 +54,11 @@ jobs:
       - name: Install browser runtime for accessibility certification
         run: pnpm exec playwright install --with-deps chromium
 
-      - name: Run release checks and generate evidence
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p release-evidence
-          cp release-ref.txt release-evidence/release-ref.txt
-          pnpm typecheck 2>&1 | tee release-evidence/typecheck.log
-          pnpm lint 2>&1 | tee release-evidence/lint.log
-          pnpm test 2>&1 | tee release-evidence/test.log
-          pnpm build 2>&1 | tee release-evidence/build.log
-          pnpm certify 2>&1 | tee release-evidence/certify.log
-          pnpm mutation-review 2>&1 | tee release-evidence/mutation-review.log
-          pnpm arena 2>&1 | tee release-evidence/arena.log
-          pnpm accessibility:certify 2>&1 | tee release-evidence/accessibility.log
-          pnpm containment:certify 2>&1 | tee release-evidence/containment.log
-          pnpm docker-containment-test 2>&1 | tee release-evidence/docker-containment.log
-          pnpm release:rehearsal 2>&1 | tee release-evidence/release-rehearsal.log
-          pnpm demo:certify 2>&1 | tee release-evidence/demo.log
-          node --import tsx scripts/supply-chain.ts --sign > release-evidence/supply-chain.json
-          pnpm audit --prod --json > release-evidence/advisory.json
-          test_count="$(awk '/^# tests [0-9]+$/ { count=$3 } END { print count }' release-evidence/test.log)"
-          [[ "$test_count" =~ ^[1-9][0-9]*$ ]] || { echo "Complete TAP test count missing" >&2; exit 1; }
-          pnpm claim-consistency -- --test-count "$test_count" --final-verdict NOT_READY 2>&1 | tee release-evidence/claim-consistency.log
-          node --input-type=module <<'NODE'
-          import { readFileSync, writeFileSync } from 'node:fs';
-          const report = JSON.parse(readFileSync('release-evidence/supply-chain.json', 'utf8'));
-          if (report.bomFormat !== 'CycloneDX' || !report.sbom || report.signatureStatus !== 'verified') {
-            throw new Error('Verified CycloneDX supply-chain evidence is incomplete');
-          }
-          writeFileSync('release-evidence/sbom.cdx.json', JSON.stringify(report.sbom, null, 2) + '\n');
-          NODE
-
       - name: Build and archive exact containment candidate
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p release-evidence
           image="invock-containment-candidate:${GITHUB_SHA}"
           docker build --pull --file docker/containment.Dockerfile --tag "$image" --label "org.opencontainers.image.revision=$GITHUB_SHA" . 2>&1 | tee release-evidence/docker-build.log
           local_id="$(docker image inspect "$image" --format '{{.Id}}')"
@@ -108,6 +77,38 @@ jobs:
             "candidateArchive": "invock-containment.tar"
           }
           JSON
+
+      - name: Run release checks and generate evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-evidence
+          cp release-ref.txt release-evidence/release-ref.txt
+          pnpm typecheck 2>&1 | tee release-evidence/typecheck.log
+          pnpm lint 2>&1 | tee release-evidence/lint.log
+          pnpm test 2>&1 | tee release-evidence/test.log
+          pnpm build 2>&1 | tee release-evidence/build.log
+          pnpm certify 2>&1 | tee release-evidence/certify.log
+          pnpm mutation-review 2>&1 | tee release-evidence/mutation-review.log
+          pnpm arena 2>&1 | tee release-evidence/arena.log
+          pnpm accessibility:certify 2>&1 | tee release-evidence/accessibility.log
+          pnpm containment:certify 2>&1 | tee release-evidence/containment.log
+          INVOCK_CONTAINMENT_IMAGE="invock-containment-candidate:${GITHUB_SHA}" pnpm docker-containment-test 2>&1 | tee release-evidence/docker-containment.log
+          pnpm release:rehearsal 2>&1 | tee release-evidence/release-rehearsal.log
+          pnpm demo:certify 2>&1 | tee release-evidence/demo.log
+          node --import tsx scripts/supply-chain.ts --sign > release-evidence/supply-chain.json
+          pnpm audit --prod --json > release-evidence/advisory.json
+          test_count="$(awk '/^# tests [0-9]+$/ { count=$3 } END { print count }' release-evidence/test.log)"
+          [[ "$test_count" =~ ^[1-9][0-9]*$ ]] || { echo "Complete TAP test count missing" >&2; exit 1; }
+          pnpm claim-consistency -- --test-count "$test_count" --final-verdict NOT_READY 2>&1 | tee release-evidence/claim-consistency.log
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const report = JSON.parse(readFileSync('release-evidence/supply-chain.json', 'utf8'));
+          if (report.sbom?.bomFormat !== 'CycloneDX' || !report.sbom || report.signatureStatus !== 'verified') {
+            throw new Error('Verified CycloneDX supply-chain evidence is incomplete');
+          }
+          writeFileSync('release-evidence/sbom.cdx.json', JSON.stringify(report.sbom, null, 2) + '\n');
+          NODE
 
       - name: Upload immutable release candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -146,7 +147,7 @@ jobs:
           set -euo pipefail
           [[ "$(awk -F= '$1 == "release_commit" { print $2 }' release-evidence/release-ref.txt)" == "$GITHUB_SHA" ]] || { echo "Candidate commit mismatch" >&2; exit 1; }
           sha256sum --check release-evidence/candidate-image-sha256.txt
-          node -e "const r=JSON.parse(require('fs').readFileSync('release-evidence/supply-chain.json','utf8')); if(r.bomFormat!=='CycloneDX'||!r.sbom||r.signatureStatus!=='verified') throw new Error('invalid signed supply-chain evidence')"
+          node -e "const r=JSON.parse(require('fs').readFileSync('release-evidence/supply-chain.json','utf8')); if(r.sbom?.bomFormat!=='CycloneDX'||!r.sbom||r.signatureStatus!=='verified') throw new Error('invalid signed supply-chain evidence')"
           node -e "JSON.parse(require('fs').readFileSync('release-evidence/sbom.cdx.json','utf8'))"
           docker load --input invock-containment.tar
           docker image inspect "invock-containment-candidate:${GITHUB_SHA}" > /dev/null

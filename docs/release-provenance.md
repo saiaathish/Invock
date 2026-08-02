@@ -37,7 +37,7 @@ Pinned action sources verified against the GitHub API and upstream tag sources:
 | --- | --- | --- |
 | `actions/checkout` | v4.2.2 | `11bd71901bbe5b1630ceea73d27597364c9af683` |
 | `pnpm/action-setup` | v4.1.0 | `a7487c7e89a18df4991f7f222e4898a00d66ddda` |
-| `actions/setup-node` | v4.4.0 | `49933ea5288caeca8642d1e84afbd3f7d682002d` |
+| `actions/setup-node` | v4.4.0 | `49933ea5288caeca8642d1e84afbd3f7d6820020` |
 | `actions/upload-artifact` | v4.6.2 | `ea165f8d65b6e75b540449e92b4886f43607fa02` |
 | `actions/download-artifact` | v4.3.0 | `d3f86a106a0bac45b974a628896c90dbdf5c8093` |
 | `actions/attest-build-provenance` | v2.2.3 | `c074443f1aee8d4aeeae555aebba3282517141b2` |
