@@ -17,7 +17,7 @@ export interface RespondedCall { kind: "respond"; response: { jsonrpc: "2.0"; id
 export interface NotificationOutcome { kind: "notification"; decision: PolicyDecision; receiptId: string; request?: ToolCallRequest; }
 export type GateOutcome = ForwardedCall | RespondedCall | NotificationOutcome;
 export interface InvocationGateOptions { requireAuthority?: boolean; requireIdentity?: boolean; requireContainment?: boolean; allowUnboundForTests?: boolean; trustedApproverKeys?: TrustedApproverKeys; trustedContainmentKeys?: TrustedContainmentKeys; approvedContainmentProfiles?: readonly ApprovedContainmentProfile[]; authorityResolver?: (request: ToolCallRequest) => InvocationRuntimeOverrides["authority"] | Promise<InvocationRuntimeOverrides["authority"]>; }
-export interface InvocationRuntimeOverrides { sessionId?: string; projectId?: string; protocolEra?: string; principal?: Principal; identityBinding?: IdentityEvidenceBinding; identityAuthority?: IdentityAuthority; identityContext?: IdentityRuntimeContext; authority?: { capsule: IntentCapsule; leases: readonly CapabilityLease[]; request: AuthorityRequest; binding?: AuthorityBinding; sessionId?: string; consume?: (leases: readonly CapabilityLease[]) => void } | undefined; }
+export interface InvocationRuntimeOverrides { sessionId?: string; projectId?: string; protocolEra?: string; principal?: Principal; identityBinding?: IdentityEvidenceBinding; identityAuthority?: IdentityAuthority; identityContext?: IdentityRuntimeContext; privacyBlocked?: boolean; privacyMetadata?: { privacyMode: "LOCAL_ZDR" | "END_TO_END_ZDR"; privacyContractDigest: string; privacyChainDigest: string; privacyProcessorProfileDigests: string[] }; authority?: { capsule: IntentCapsule; leases: readonly CapabilityLease[]; request: AuthorityRequest; binding?: AuthorityBinding; sessionId?: string; consume?: (leases: readonly CapabilityLease[]) => void } | undefined; }
 
 function errorResult(text: string, verdict: "BLOCK" | "APPROVAL_REQUIRED", receiptId: string, reasonCodes: string[], approval?: PendingApproval): ToolResult {
   return {
@@ -98,7 +98,7 @@ export class InvocationGate {
     let authorityLeaseToConsume: CapabilityLease | undefined;
     let authoritativeLeases: readonly CapabilityLease[] | undefined;
     let authoritativeSessionId: string | undefined;
-    let receiptMetadata: Parameters<InvockStore["complete"]>[6] = { ...(runtimeBase.protocolEra ? { protocolProfileId: runtimeBase.protocolEra } : {}) };
+    let receiptMetadata: Parameters<InvockStore["complete"]>[6] = { ...(runtimeBase.protocolEra ? { protocolProfileId: runtimeBase.protocolEra } : {}), ...(runtimeBase.privacyMetadata ?? {}) };
     try {
       if (callerSuppliedReceiptMetadata) throw new Error("RECEIPT_METADATA_UNTRUSTED");
       if (runtimeBase.identityBinding) {
@@ -124,6 +124,7 @@ export class InvocationGate {
       if (!this.testEscape && this.options.requireAuthority && (!runtimeBase.authority?.capsule.authorityBinding || !runtimeBase.authority.capsule.humanActivation)) throw new Error("BOUND_HUMAN_AUTHORITY_REQUIRED");
       envelope = await normalizeInvocation(request, descriptor, context);
       decision = evaluatePolicy(this.policy, envelope, now);
+      if (runtimeBase.privacyBlocked) decision = blockedDecision(decision, "UPSTREAM_BLOCKED_BY_PRIVACY");
       if (runtimeBase.authority) {
         if (runtimeBase.authority.sessionId !== undefined && runtimeBase.authority.sessionId !== runtimeBase.sessionId) throw new Error("AUTHORITY_SESSION_MISMATCH");
         const capsuleBinding = runtimeBase.authority.capsule.authorityBinding;

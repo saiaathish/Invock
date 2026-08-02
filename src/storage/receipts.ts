@@ -43,6 +43,10 @@ export interface ReceiptPayload {
   arenaRunId?: string;
   policyDraftDigest?: string;
   protocolProfileId?: string;
+  privacyMode?: "LOCAL_ZDR" | "END_TO_END_ZDR";
+  privacyContractDigest?: string;
+  privacyChainDigest?: string;
+  privacyProcessorProfileDigests?: string[];
   previousReceiptHash: string | null;
 }
 export interface ReceiptMetadata {
@@ -62,6 +66,10 @@ export interface ReceiptMetadata {
   arenaRunId?: string;
   policyDraftDigest?: string;
   protocolProfileId?: string;
+  privacyMode?: "LOCAL_ZDR" | "END_TO_END_ZDR";
+  privacyContractDigest?: string;
+  privacyChainDigest?: string;
+  privacyProcessorProfileDigests?: string[];
 }
 export interface SignedReceipt { payload: ReceiptPayload; canonicalization: "RFC8785-JCS"; hashAlgorithm: "SHA-256"; receiptHash: string; signatureAlgorithm: "Ed25519"; signingKeyId: string; signature: string; }
 export interface SigningMaterial { signingKeyId: string; privateKeyPem: string; publicKeyPem: string; }

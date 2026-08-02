@@ -46,6 +46,10 @@ export interface RedactedReceipt {
   containmentRunId?: string;
   containmentRequestDigest?: string;
   containmentProfileDigest?: string;
+  privacyMode?: "LOCAL_ZDR" | "END_TO_END_ZDR";
+  privacyContractDigest?: string;
+  privacyChainDigest?: string;
+  privacyProcessorProfileDigests?: string[];
 }
 
 export interface EvidenceReceipt extends RedactedReceipt { signedReceipt: SignedReceipt; }
@@ -120,6 +124,7 @@ function redactReceipt(receipt: SignedReceipt): RedactedReceipt {
     ...(payload.containmentRunId ? { containmentRunId: safeString(payload.containmentRunId) } : {}),
     ...(payload.containmentRequestDigest ? { containmentRequestDigest: safeString(payload.containmentRequestDigest) } : {}),
     ...(payload.containmentProfileDigest ? { containmentProfileDigest: safeString(payload.containmentProfileDigest) } : {}),
+    ...(payload.privacyMode ? { privacyMode: payload.privacyMode, privacyContractDigest: safeString(payload.privacyContractDigest), privacyChainDigest: safeString(payload.privacyChainDigest), privacyProcessorProfileDigests: (payload.privacyProcessorProfileDigests ?? []).map(safeString) } : {}),
   };
 }
 
@@ -243,10 +248,10 @@ export function renderEvidenceBundle(bundle: EvidenceBundle, format: EvidenceFor
 
 const digest = /^[A-Za-z0-9_-]{43}$/u;
 const base64Url = /^[A-Za-z0-9_-]+$/u;
-const receiptKeys = new Set(["receiptVersion", "receiptId", "instanceId", "sequence", "createdAt", "invocationId", "sessionId", "principalId", "serverId", "toolName", "argumentsDigest", "envelopeDigest", "policyDigest", "toolSchemaDigest", "lineageDigest", "lineageReferences", "verdict", "matchedRuleIds", "reasonCodes", "upstreamForwarded", "upstreamResultDigest", "approvalId", "intentCapsuleDigest", "capabilityLeaseChainDigest", "effectiveAuthorityDigest", "authorityBindingDigest", "identityDigest", "sessionDigest", "projectDigest", "agentDigest", "identityBindingDigest", "attestationDigest", "containmentRunId", "containmentRequestDigest", "containmentProfileDigest", "arenaRunId", "policyDraftDigest", "protocolProfileId", "previousReceiptHash"]);
+const receiptKeys = new Set(["receiptVersion", "receiptId", "instanceId", "sequence", "createdAt", "invocationId", "sessionId", "principalId", "serverId", "toolName", "argumentsDigest", "envelopeDigest", "policyDigest", "toolSchemaDigest", "lineageDigest", "lineageReferences", "verdict", "matchedRuleIds", "reasonCodes", "upstreamForwarded", "upstreamResultDigest", "approvalId", "intentCapsuleDigest", "capabilityLeaseChainDigest", "effectiveAuthorityDigest", "authorityBindingDigest", "identityDigest", "sessionDigest", "projectDigest", "agentDigest", "identityBindingDigest", "attestationDigest", "containmentRunId", "containmentRequestDigest", "containmentProfileDigest", "arenaRunId", "policyDraftDigest", "protocolProfileId", "privacyMode", "privacyContractDigest", "privacyChainDigest", "privacyProcessorProfileDigests", "previousReceiptHash"]);
 const lineageReferenceKeys = new Set(["sourceInvocationId", "labels", "matchedFingerprintIds", "matchKinds", "taintRecordId", "expiresAt", "fingerprintProofDigest"]);
 const matchKindValues = new Set<FingerprintKind>(["exact", "base64", "base64url", "urlencoded", "hex", "gzip", "deflate", "brotli", "sha256", "sha1", "md5", "hmac_sha256", "reversed", "rot13"]);
-const redactedReceiptKeys = new Set(["receiptId", "sequence", "createdAt", "invocationId", "sessionId", "principalId", "serverId", "toolName", "argumentsDigest", "envelopeDigest", "policyDigest", "toolSchemaDigest", "lineageDigest", "lineageReferences", "verdict", "matchedRuleIds", "reasonCodes", "upstreamForwarded", "previousReceiptHash", "receiptHash", "signingKeyId", "signature", "containmentRunId", "containmentRequestDigest", "containmentProfileDigest", "signedReceipt"]);
+const redactedReceiptKeys = new Set(["receiptId", "sequence", "createdAt", "invocationId", "sessionId", "principalId", "serverId", "toolName", "argumentsDigest", "envelopeDigest", "policyDigest", "toolSchemaDigest", "lineageDigest", "lineageReferences", "verdict", "matchedRuleIds", "reasonCodes", "upstreamForwarded", "previousReceiptHash", "receiptHash", "signingKeyId", "signature", "containmentRunId", "containmentRequestDigest", "containmentProfileDigest", "privacyMode", "privacyContractDigest", "privacyChainDigest", "privacyProcessorProfileDigests", "signedReceipt"]);
 
 function exactObject(value: unknown, keys: Set<string>): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value) && Object.keys(value).every(key => keys.has(key));
@@ -276,6 +281,9 @@ function validPayload(value: unknown): value is ReceiptPayload {
   for (const key of ["argumentsDigest", "envelopeDigest", "policyDigest", "toolSchemaDigest"]) if (typeof p[key] !== "string") return false;
   if (typeof p.lineageDigest !== "string" || !digest.test(p.lineageDigest) || !Array.isArray(p.lineageReferences) || !p.lineageReferences.every(validLineageReference) || digestJson(p.lineageReferences) !== p.lineageDigest) return false;
   for (const key of ["upstreamResultDigest", "intentCapsuleDigest", "capabilityLeaseChainDigest", "effectiveAuthorityDigest", "authorityBindingDigest", "identityDigest", "sessionDigest", "projectDigest", "agentDigest", "identityBindingDigest", "attestationDigest", "containmentRequestDigest", "containmentProfileDigest", "policyDraftDigest"]) if (p[key] !== undefined && (typeof p[key] !== "string" || !digest.test(p[key]))) return false;
+  if (p.privacyMode !== undefined && p.privacyMode !== "LOCAL_ZDR" && p.privacyMode !== "END_TO_END_ZDR") return false;
+  for (const key of ["privacyContractDigest", "privacyChainDigest"] as const) if (p[key] !== undefined && (typeof p[key] !== "string" || !digest.test(p[key]))) return false;
+  if (p.privacyProcessorProfileDigests !== undefined && (!Array.isArray(p.privacyProcessorProfileDigests) || !p.privacyProcessorProfileDigests.every(item => typeof item === "string" && digest.test(item)))) return false;
   if (p.containmentRunId !== undefined && (typeof p.containmentRunId !== "string" || p.containmentRunId.length === 0 || p.containmentRunId.length > 256)) return false;
   return true;
 }
