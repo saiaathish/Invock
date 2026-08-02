@@ -34,7 +34,7 @@ export interface SupplyChainReport {
   dependencyEdges: SupplyChainDependencyEdge[];
   importerSnapshots: SupplyChainImporterSnapshot[];
   lockfileMetadata: { format: "pnpm" | "unknown"; lockfileVersion?: string; snapshotCount: number };
-  sbom: { bomFormat: "CycloneDX"; specVersion: "1.5"; components: Array<{ type: "library"; name: string; version: string; scope: string; integrity?: string }>; digest: string };
+  sbom: { bomFormat: "CycloneDX"; specVersion: "1.5"; serialNumber: string; components: Array<{ type: "library"; name: string; version: string; scope: string; integrity?: string }>; digest: string };
   containerReferences: SupplyChainContainerReference[];
   lockfileStatus: "present" | "missing";
   advisoryStatus: "not-queried" | "queried-no-findings" | "queried-findings" | "query-failed";
@@ -51,6 +51,12 @@ export interface SupplyChainScanOptions {
 }
 
 function validEvidenceDigest(value: string): boolean { return /^[A-Za-z0-9_-]{43}$/.test(value); }
+
+function deterministicSbomSerialNumber(value: unknown): string {
+  const hex = Buffer.from(sha256(canonicalize(value)), "base64url").toString("hex");
+  const variant = ((Number.parseInt(hex[16] ?? "0", 16) & 0x3) | 0x8).toString(16);
+  return `urn:uuid:${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
 
 function boundedText(path: string): { text?: string; evidence: SupplyChainEvidenceFile } {
   if (!existsSync(path)) return { evidence: { path, bytes: 0, digest: digestJson({ status: "missing", path: basename(path) }), status: "missing" } };
@@ -259,7 +265,9 @@ export function scanSupplyChain(rootDirectory: string, options: SupplyChainScanO
       ? resolvedDependencies.map(item => ({ type: "library" as const, name: item.name, version: item.version, scope: "resolved:pnpm-lockfile", ...(item.integrity ? { integrity: item.integrity } : {}) }))
       : inventory.map(item => ({ type: "library" as const, name: item.name, version: item.requestedVersion, scope: `${item.scope}:${versionEvidence}` }))),
   ];
-  const sbom = { bomFormat: "CycloneDX" as const, specVersion: "1.5" as const, components, digest: digestJson({ bomFormat: "CycloneDX", specVersion: "1.5", components }) };
+  const sbomBody = { bomFormat: "CycloneDX" as const, specVersion: "1.5" as const, components };
+  const serialNumber = deterministicSbomSerialNumber(sbomBody);
+  const sbom = { ...sbomBody, serialNumber, digest: digestJson({ ...sbomBody, serialNumber }) };
   const containerReferences = containers(root, containerEvidence.map(item => ({ path: item.evidence.path, ...(item.text !== undefined ? { text: item.text } : {}) })));
   const { digest: _sbomDigest, ...sbomEvidence } = sbom;
   const lockfileVersion = "lockfileVersion" in resolution ? resolution.lockfileVersion : undefined;
