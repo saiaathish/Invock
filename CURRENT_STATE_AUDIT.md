@@ -10,7 +10,7 @@ The repository is **NOT READY** for the transformation mandate's final READY con
 
 ## Current independent-audit wave
 
-The current reports in `.artifacts/independent-audits/` were run against the intentionally dirty worktree at HEAD `593e9ed97504265f014f266b38a2f92df8ee4043` or a later uncommitted overlay. Their dispositions are evidence boundaries, not readiness claims; reports that name another HEAD are historical and cannot certify this tree:
+The current reports in `.artifacts/independent-audits/` were run against the pre-fix, intentionally dirty worktree at HEAD `593e9ed97504265f014f266b38a2f92df8ee4043` or a later uncommitted overlay. Their dispositions are evidence boundaries, not readiness claims; reports that name another HEAD are historical and cannot certify the clean release candidate. The current source fixes are recorded at `5ac2573f80fa1189ff4ffaf06902bb53847bbc35`; the five reports must be refreshed against the final merged/tagged commit before they can be used as final certification evidence:
 
 | Report | Disposition | Reconciliation |
 |---|---|---|
@@ -27,7 +27,7 @@ The reports establish a completed five-audit wave, but not five passing audits. 
 | Claim | Source path/line | Command | Result | Status | Limitation |
 |---|---|---|---|---|---|
 | Repository is the requested Invock checkout | `/Users/saiaathishkarthik/Desktop/Invock` | `git rev-parse --show-toplevel` (inspection context) | Requested root is the Git worktree | PASS | No external repository identity is inferred. |
-| Current branch and baseline commit | `.git/HEAD`; commit `593e9ed` | `git status --short --branch && git log -5 --oneline --decorate` | `codex/invock-universal-containment`, HEAD `593e9ed`; worktree intentionally contains tracked and untracked implementation/documentation changes | PASS | This is not a clean release state; no release claim can bind until the intended changes are committed and the worktree is clean. |
+| Current branch and baseline commit | `.git/HEAD`; commit `5ac2573` | `git status --short --branch && git log -5 --oneline --decorate` | `codex/invock-universal-containment`, clean HEAD `5ac2573`; 291 tests and the release-provenance hardening are committed and pushed in PR #10 | PASS | This is the pre-merge release candidate; no release claim can bind until the exact merged commit is tagged and its external evidence is verified. |
 | Prompt standard was read before work | `Prompt-engineering-mandate.txt:1-65` | `sed -n '1,240p' Prompt-engineering-mandate.txt` | Eleven prompt elements and subagent rules observed | PASS | This audit did not issue child-agent prompts. |
 | Requested investigator workflow was read | `gstack-investigate/SKILL.md` | `sed -n '1,1000p' .../gstack-investigate/SKILL.md` | Evidence-first investigation, scope discipline, and completion protocol read | PASS | The task is an audit, so no fix or regression test was authorized. |
 
